@@ -1,20 +1,39 @@
-from contextlib import closing
-from io import StringIO
+import functools
 from os import path
-
 import numpy as np
 
 import gymnasium as gym
-from gymnasium import Env, spaces, utils
-from gymnasium.envs.toy_text.utils import categorical_sample
+from gymnasium.envs.toy_text.frozen_lake import generate_random_map, is_valid
 from gymnasium.error import DependencyNotInstalled
 from gymnasium.utils import seeding
+from gymnasium.spaces import Dict, Box, Tuple, Discrete, MultiDiscrete
 
+from pettingzoo import AECEnv
+from pettingzoo.utils import AgentSelector, wrappers
 
 LEFT = 0
 DOWN = 1
 RIGHT = 2
 UP = 3
+DO_NOTHING = 4
+
+OUT_OF_MAP, EMPTY, HOLE, GOAL, START = 0, 1, 2, 3, 4
+
+MOVE_DELTA = {
+    LEFT: (-1, 0),
+    DOWN: (0, 1),
+    RIGHT: (1, 0),
+    UP: (0, -1),
+    DO_NOTHING: (0, 0),
+}
+
+ACTION_TO_TEXT = {
+    LEFT: "LEFT",
+    DOWN: "DOWN",
+    RIGHT: "RIGHT",
+    UP: "UP",
+    DO_NOTHING: "DO_NOTHING",
+}
 
 MAPS = {
     "4x4": ["SFFF", "FHFH", "FFFH", "HFFG"],
@@ -30,285 +49,111 @@ MAPS = {
     ],
 }
 
-
-# DFS to check that it's a valid path.
-def is_valid(board: list[list[str]], max_size: int) -> bool:
-    frontier, discovered = [], set()
-    frontier.append((0, 0))
-    while frontier:
-        r, c = frontier.pop()
-        if not (r, c) in discovered:
-            discovered.add((r, c))
-            directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
-            for x, y in directions:
-                r_new = r + x
-                c_new = c + y
-                if r_new < 0 or r_new >= max_size or c_new < 0 or c_new >= max_size:
-                    continue
-                if board[r_new][c_new] == "G":
-                    return True
-                if board[r_new][c_new] != "H":
-                    frontier.append((r_new, c_new))
-    return False
-
-
-def generate_random_map(
-    size: int = 8, p: float = 0.8, seed: int | None = None
-) -> list[str]:
-    """Generates a random valid map (one that has a path from start to goal)
-
-    Args:
-        size: size of each side of the grid
-        p: probability that a tile is frozen
-        seed: optional seed to ensure the generation of reproducible maps
-
-    Returns:
-        A random valid map
+def env(seed=None, render_mode=None):
     """
-    valid = False
-    board = []  # initialize to make pyright happy
-
-    np_random, _ = seeding.np_random(seed)
-
-    while not valid:
-        p = min(1, p)
-        board = np_random.choice(["F", "H"], (size, size), p=[p, 1 - p])
-        board[0][0] = "S"
-        board[-1][-1] = "G"
-        valid = is_valid(board, size)
-    return ["".join(x) for x in board]
-
-
-class FrozenLakeEnv(Env):
+    The env function often wraps the environment in wrappers by default.
+    You can find full documentation for these methods
+    elsewhere in the PettingZoo developer documentation.
     """
-     Frozen lake involves crossing a frozen lake from start to goal without falling into any holes
-     by walking over the frozen lake.
-     The player may not always move in the intended direction due to the slippery nature of the frozen lake.
+    env = raw_env(seed=seed, render_mode=render_mode)
+    # this wrapper helps error handling for discrete action spaces
+    env = wrappers.AssertOutOfBoundsWrapper(env)
+    # Provides a wide vareity of helpful user errors
+    # Strongly recommended
+    env = wrappers.OrderEnforcingWrapper(env)
+    return env
 
-     ## Description
-     The game starts with the player at location `[0,0]` of the frozen lake grid world with the
-     goal located at far extent of the world e.g. `[3,3]` for the 4x4 environment.
-
-     Holes in the ice are distributed in set locations when using a pre-determined map
-     or in random locations when a random map is generated.
-     Randomly generated worlds will always have a path to the goal.
-
-     The player makes moves until they reach the goal or fall in a hole.
-
-     The lake is slippery (unless disabled) so the player may move perpendicular
-     to the intended direction sometimes (see `is_slippery` in Argument section).
-
-     Elf and stool from [https://franuka.itch.io/rpg-snow-tileset](https://franuka.itch.io/rpg-snow-tileset).
-     All other assets by Mel Tillery [http://www.cyaneus.com/](http://www.cyaneus.com/).
-
-     ## Action Space
-     The action shape is `(1,)` in the range `{0, 3}` indicating
-     which direction to move the player.
-
-     - 0: Move left
-     - 1: Move down
-     - 2: Move right
-     - 3: Move up
-
-     ## Observation Space
-     The observation is a value representing the player's current position as
-     `current_row * ncols + current_col` (where both the row and col start at 0).
-     Therefore, the observation is returned as an integer.
-
-     For example, the goal position in the 4x4 map can be calculated as follows: 3 * 4 + 3 = 15.
-     The number of possible observations is dependent on the size of the map.
-
-     ## Starting State
-     The episode starts with the player in state `[0]` (location [0, 0]).
-
-     ## Rewards
-
-     Default reward schedule:
-     - Reach goal: +1
-     - Reach hole: 0
-     - Reach frozen: 0
-
-     See `reward_schedule` for reward customization in the Argument section.
-
-     ## Episode End
-     The episode ends if the following happens:
-
-     - Termination:
-         1. The player moves into a hole.
-         2. The player reaches the goal at `max(nrow) * max(ncol) - 1` (location `[max(nrow)-1, max(ncol)-1]`).
-
-     - Truncation (using the time_limit wrapper):
-         1. The length of the episode is 100 for FrozenLake4x4, 200 for FrozenLake8x8.
-
-     ## Information
-
-     `step()` and `reset()` return a dict with the following keys:
-     - `p`: transition probability for the state which will be impacted by the `is_slippery` parameter.
-
-     ## Arguments
-
-     FrozenLake has five parameters:
-     ```python
-     import gymnasium as gym
-     gym.make(
-         'FrozenLake-v1',
-         desc=None,
-         map_name="4x4",
-         is_slippery=True,
-         success_rate=1.0/3.0,
-         reward_schedule=(1, 0, 0)
-     )
-     ```
-
-     * `desc=None`: Used to specify maps non-preloaded maps.
-         If `desc=None` then `map_name` will be used. If both `desc` and `map_name` are
-         `None` a random 8x8 map with 80% of locations frozen will be generated.
-
-         To Specify a custom map - `desc=["SFFF", "FHFH", "FFFH", "HFFG"]`
-         The tile letters denote:
-         - "S" for Start tile
-         - "G" for Goal tile
-         - "F" for frozen tile
-         - "H" for a tile with a hole
-
-         A random generated map can be specified by calling the function `generate_random_map`.
-         ```
-         from gymnasium.envs.toy_text.frozen_lake import generate_random_map
-
-         gym.make('FrozenLake-v1', desc=generate_random_map(size=8))
-         ```
-
-     * `map_name="4x4"` - Helps load two predefined map names (`4x4` and `8x8`)
-         ```
-         "4x4":[
-             "SFFF",
-             "FHFH",
-             "FFFH",
-             "HFFG"
-         ]
-
-         "8x8": [
-             "SFFFFFFF",
-             "FFFFFFFF",
-             "FFFHFFFF",
-             "FFFFFHFF",
-             "FFFHFFFF",
-             "FHHFFFHF",
-             "FHFFHFHF",
-             "FFFHFFFG",
-         ]
-         ```
-
-    * `is_slippery=True`: If true the player will move in intended direction with probability specified by the
-         `success_rate` else will move in either perpendicular direction with equal probability in both directions.
-
-         For example, if action is left, `is_slippery` is True, and `success_rate` is 1/3, then:
-         - P(move left)=1/3
-         - P(move up)=1/3
-         - P(move down)=1/3
-
-         If action is up, `is_slippery` is True, and `success_rate` is 3/4, then:
-         - P(move up)=3/4
-         - P(move left)=1/8
-         - P(move right)=1/8
-
-    * `success_rate=1.0/3.0`: Used to specify the probability of moving in the intended direction when is_slippery=True
-
-    * `reward_schedule=(1, 0, 0)`: Used to specify reward amounts for reaching certain tiles.
-         The indices correspond to: Reach Goal, Reach Hole, Reach Frozen (includes Start), Respectively
-
-     ## Version History
-     * v1: Bug fixes to rewards (v1.3, added reward customization)
-     * v0: Initial version release
-
+class raw_env(AECEnv):
+    """
+    The metadata holds environment constants. From gymnasium, we inherit the "render_modes",
+    metadata which specifies which modes can be put into the render() method.
+    At least human mode should be supported.
+    The "name" metadata allows the environment to be pretty printed.
     """
 
     metadata = {
-        "render_modes": ["human", "ansi", "rgb_array"],
+        "render_modes": ["human"], 
+        "name": "MA_FrozenLake_v0",
         "render_fps": 4,
     }
 
-    def __init__(
-        self,
-        render_mode: str | None = None,
-        desc: list[str] = None,
-        map_name: str = "4x4",
-        is_slippery: bool = True,
-        success_rate: float = 1.0 / 3.0,
-        reward_schedule: tuple[int, int, int] = (1, 0, 0),
-    ):
-        if desc is None and map_name is None:
-            desc = generate_random_map()
-        elif desc is None:
-            desc = MAPS[map_name]
-        self.desc = desc = np.asarray(desc, dtype="c")
-        self.nrow, self.ncol = nrow, ncol = desc.shape
-        self.reward_range = (min(reward_schedule), max(reward_schedule))
+    def __init__(self,
+                seed=None,
+                render_mode=None,
+                desc: list[str] = None,
+                map_name: str = "4x4",
+                is_slippery: bool = True,
+                success_rate: float = 1.0 / 3.0,
+                reward_schedule: tuple[int, int, int] = (1, 0, 0),
+        ):
+        """
+        The init method takes in environment arguments and
+         should define the following attributes:
+        - possible_agents
+        - render_mode
 
-        nA = 4
-        nS = nrow * ncol
+        Note: as of v1.18.1, the action_spaces and observation_spaces attributes are deprecated.
+        Spaces should be defined in the action_space() and observation_space() methods.
+        If these methods are not overridden, spaces will be inferred from self.observation_spaces/action_spaces, raising a warning.
 
-        self.initial_state_distrib = np.array(desc == b"S").astype("float64").ravel()
-        self.initial_state_distrib /= self.initial_state_distrib.sum()
+        These attributes should not be changed after initialization.
+        """
+        N_AGENTS = 2
+        self.N_MESSAGES = 5
+        self.N_ACTIONS = 5
+        self.GRID_SIZE = 4
+        self.OBS_SIZE = 3
+        self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
+        self.reward_schedule = reward_schedule
 
-        self.P = {s: {a: [] for a in range(nA)} for s in range(nS)}
+        self.agent_name_mapping = dict(
+            zip(self.possible_agents, list(range(len(self.possible_agents))))
+        )
 
-        fail_rate = (1.0 - success_rate) / 2.0
-
-        def to_s(row, col):
-            return row * ncol + col
-
-        def inc(row, col, a):
-            if a == LEFT:
-                col = max(col - 1, 0)
-            elif a == DOWN:
-                row = min(row + 1, nrow - 1)
-            elif a == RIGHT:
-                col = min(col + 1, ncol - 1)
-            elif a == UP:
-                row = max(row - 1, 0)
-            return (row, col)
-
-        def update_probability_matrix(row, col, action):
-            new_row, new_col = inc(row, col, action)
-            new_state = to_s(new_row, new_col)
-            new_letter = desc[new_row, new_col]
-            terminated = bytes(new_letter) in b"GH"
-            reward = reward_schedule[
-                b"GHF".index(new_letter if new_letter in b"GHF" else b"F")
-            ]
-            return new_state, reward, terminated
-
-        for row in range(nrow):
-            for col in range(ncol):
-                s = to_s(row, col)
-                for a in range(4):
-                    li = self.P[s][a]
-                    letter = desc[row, col]
-                    if letter in b"GH":
-                        li.append((1.0, s, 0, True))
-                    else:
-                        if is_slippery:
-                            for b in [(a - 1) % 4, a, (a + 1) % 4]:
-                                li.append(
-                                    (
-                                        success_rate if b == a else fail_rate,
-                                        *update_probability_matrix(row, col, b),
-                                    )
-                                )
-                        else:
-                            li.append((1.0, *update_probability_matrix(row, col, a)))
-
-        self.observation_space = spaces.Discrete(nS)
-        self.action_space = spaces.Discrete(nA)
-
+        self._action_spaces = {
+            agent: Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)))
+            for agent in self.possible_agents
+        }
+        self._observation_spaces = {
+            agent: Dict({
+                "grid": Box(low=0, high=1, shape=(self.OBS_SIZE, self.OBS_SIZE, 4), dtype=np.float32),  # 4 tile types
+                "messages": MultiDiscrete([self.N_MESSAGES] * (len(self.possible_agents) - 1)), # later communication channel
+            })
+            for agent in self.possible_agents
+        }
         self.render_mode = render_mode
+
+        # Generate game state
+        self.grid = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int8)
+        m = generate_random_map(size=self.GRID_SIZE, seed=seed)
+        for y in range(self.GRID_SIZE):
+            for x in range(self.GRID_SIZE):
+                tile = m[y][x]
+                if tile == "H":
+                    self.grid[x, y] = HOLE
+                elif tile == "G":
+                    self.grid[x, y] = GOAL
+                elif tile == "F":
+                    self.grid[x, y] = EMPTY
+                elif tile == "S":
+                    self.grid[x, y] = START
+        
+        self.agent_positions = {
+            agent: (0, 0)
+            for agent in self.possible_agents
+        }
+        self.agent_messages = {agent: 0 for agent in self.possible_agents}
+
+        desc = np.asarray(m, dtype="c")
+
+        nrow, ncol = nrow, ncol = desc.shape
+        self.reward_range = (min(reward_schedule), max(reward_schedule))
 
         # pygame utils
         self.window_size = (min(64 * ncol, 512), min(64 * nrow, 512))
         self.cell_size = (
-            self.window_size[0] // self.ncol,
-            self.window_size[1] // self.nrow,
+            self.window_size[0] // ncol,
+            self.window_size[1] // nrow,
         )
         self.window_surface = None
         self.clock = None
@@ -319,39 +164,37 @@ class FrozenLakeEnv(Env):
         self.goal_img = None
         self.start_img = None
 
-    def step(self, a):
-        transitions = self.P[self.s][a]
-        i = categorical_sample([t[0] for t in transitions], self.np_random)
-        p, s, r, t = transitions[i]
-        self.s = s
-        self.lastaction = a
+    def get_local_view(self, agent_id, distance=1):
+        x, y = self.agent_positions[agent_id]
+        # pad the grid to handle edge cases
+        padded = np.pad(self.grid, pad_width=distance, mode='constant', constant_values=OUT_OF_MAP)
 
-        if self.render_mode == "human":
-            self.render()
-        # truncation=False as the time limit is handled by the `TimeLimit` wrapper added during `make`
-        return int(s), r, t, False, {"prob": p}
+        # adjust for padding
+        x_p, y_p = x + distance, y + distance
 
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict | None = None,
-    ):
-        super().reset(seed=seed)
-        self.s = categorical_sample(self.initial_state_distrib, self.np_random)
-        self.lastaction = None
+        # slice local area
+        local = padded[x_p - distance : x_p + distance + 1,
+                    y_p - distance : y_p + distance + 1]
+        return local
 
-        if self.render_mode == "human":
-            self.render()
-        return int(self.s), {"prob": 1}
+    @functools.lru_cache(maxsize=None)
+    def observation_space(self, agent):
+        return self._observation_spaces[agent]
+
+    @functools.lru_cache(maxsize=None)
+    def action_space(self, agent):
+        return Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)))
 
     def render(self):
+        """
+        Renders the environment.
+        """
         if self.render_mode is None:
             assert self.spec is not None
             gym.logger.warn(
                 "You are calling render method without specifying any render mode. "
                 "You can specify the render_mode at initialization, "
-                f'e.g. gym.make("{self.spec.id}", render_mode="rgb_array")'
+                f'e.g. gym.make("{self.spec.id}", render_mode="human")'
             )
             return
 
@@ -410,44 +253,49 @@ class FrozenLakeEnv(Env):
                 pygame.image.load(file_name), self.cell_size
             )
         if self.elf_images is None:
-            elfs = [
-                path.join(path.dirname(__file__), "img/elf_left.png"),
-                path.join(path.dirname(__file__), "img/elf_down.png"),
-                path.join(path.dirname(__file__), "img/elf_right.png"),
-                path.join(path.dirname(__file__), "img/elf_up.png"),
-            ]
-            self.elf_images = [
-                pygame.transform.scale(pygame.image.load(f_name), self.cell_size)
-                for f_name in elfs
-            ]
+            elfs = {
+                LEFT: path.join(path.dirname(__file__), "img/elf_left.png"),
+                DOWN: path.join(path.dirname(__file__), "img/elf_down.png"),
+                RIGHT: path.join(path.dirname(__file__), "img/elf_right.png"),
+                UP: path.join(path.dirname(__file__), "img/elf_up.png"),
+            }
+            self.elf_images = {
+                LEFT: pygame.transform.scale(pygame.image.load(elfs[LEFT]), self.cell_size),
+                DOWN: pygame.transform.scale(pygame.image.load(elfs[DOWN]), self.cell_size),
+                RIGHT: pygame.transform.scale(pygame.image.load(elfs[RIGHT]), self.cell_size),
+                UP: pygame.transform.scale(pygame.image.load(elfs[UP]), self.cell_size),
+            }
 
-        desc = self.desc.tolist()
-        assert isinstance(desc, list), f"desc should be a list or an array, got {desc}"
-        for y in range(self.nrow):
-            for x in range(self.ncol):
+        ncols, nrows = self.grid.shape
+        for y in range(nrows):
+            for x in range(ncols):
                 pos = (x * self.cell_size[0], y * self.cell_size[1])
                 rect = (*pos, *self.cell_size)
 
                 self.window_surface.blit(self.ice_img, pos)
-                if desc[y][x] == b"H":
+                if self.grid[x, y] == HOLE:
                     self.window_surface.blit(self.hole_img, pos)
-                elif desc[y][x] == b"G":
+                elif self.grid[x, y] == GOAL:
                     self.window_surface.blit(self.goal_img, pos)
-                elif desc[y][x] == b"S":
+                elif self.grid[x, y] == START:
                     self.window_surface.blit(self.start_img, pos)
 
                 pygame.draw.rect(self.window_surface, (180, 200, 230), rect, 1)
 
-        # paint the elf
-        bot_row, bot_col = self.s // self.ncol, self.s % self.ncol
-        cell_rect = (bot_col * self.cell_size[0], bot_row * self.cell_size[1])
-        last_action = self.lastaction if self.lastaction is not None else 1
-        elf_img = self.elf_images[last_action]
+        for agent_id in self.agents:
+            bot_x, bot_y = self.agent_positions[agent_id]
+            cell_rect = (bot_x * self.cell_size[0], bot_y * self.cell_size[1])
 
-        if desc[bot_row][bot_col] == b"H":
-            self.window_surface.blit(self.cracked_hole_img, cell_rect)
-        else:
-            self.window_surface.blit(elf_img, cell_rect)
+            image_from_last_action = DOWN # Default image
+            if self.agent_last_action[agent_id] not in (None, DO_NOTHING):
+                image_from_last_action = self.agent_last_action[agent_id]
+
+            elf_img = self.elf_images[image_from_last_action]
+
+            if self.grid[bot_x, bot_y] == HOLE:
+                self.window_surface.blit(self.cracked_hole_img, cell_rect)
+            else:
+                self.window_surface.blit(elf_img, cell_rect)
 
         if mode == "human":
             pygame.event.pump()
@@ -458,38 +306,166 @@ class FrozenLakeEnv(Env):
                 np.array(pygame.surfarray.pixels3d(self.window_surface)), axes=(1, 0, 2)
             )
 
-    @staticmethod
-    def _center_small_rect(big_rect, small_dims):
-        offset_w = (big_rect[2] - small_dims[0]) / 2
-        offset_h = (big_rect[3] - small_dims[1]) / 2
-        return (
-            big_rect[0] + offset_w,
-            big_rect[1] + offset_h,
-        )
-
     def _render_text(self):
-        desc = self.desc.tolist()
-        outfile = StringIO()
+        raise NotImplementedError("Text rendering not implemented yet.")
 
-        row, col = self.s // self.ncol, self.s % self.ncol
-        desc = [[c.decode("utf-8") for c in line] for line in desc]
-        desc[row][col] = utils.colorize(desc[row][col], "red", highlight=True)
-        if self.lastaction is not None:
-            outfile.write(f"  ({['Left', 'Down', 'Right', 'Up'][self.lastaction]})\n")
-        else:
-            outfile.write("\n")
-        outfile.write("\n".join("".join(line) for line in desc) + "\n")
-
-        with closing(outfile):
-            return outfile.getvalue()
+    def observe(self, agent):
+        """
+        Observe should return the observation of the specified agent. This function
+        should return a sane observation (though not necessarily the most up to date possible)
+        at any time after reset() is called.
+        """
+        # observation of one agent is the previous state of the other
+        return np.array(self.observations[agent])
 
     def close(self):
-        if self.window_surface is not None:
-            import pygame
+        """
+        Close should release any graphical displays, subprocesses, network connections
+        or any other environment data which should not be kept around after the
+        user is no longer using the environment.
+        """
+        pass
 
-            pygame.display.quit()
-            pygame.quit()
+    def reset(self, seed=None, options=None):
+        """
+        Reset needs to initialize the following attributes
+        - agents
+        - rewards
+        - _cumulative_rewards
+        - terminations
+        - truncations
+        - infos
+        - agent_selection
+        And must set up the environment so that render(), step(), and observe()
+        can be called without issues.
+        Here it sets up the state dictionary which is used by step() and the observations dictionary which is used by step() and observe()
+        """
+        # Unlike gymnasium's Env, the environment is responsible for setting the random seed explicitly.
+        if seed is not None:
+            self.np_random, self.np_random_seed = seeding.np_random(seed)
+        self.agents = self.possible_agents[:]
+        self.rewards = {agent: 0 for agent in self.agents}
+        self._cumulative_rewards = {agent: 0 for agent in self.agents}
+        self.terminations = {agent: False for agent in self.agents}
+        self.truncations = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
+        self.state = {agent: None for agent in self.agents}
+        self.observations = {agent: None for agent in self.agents}
+        """
+        Our AgentSelector utility allows easy cyclic stepping through the agents list.
+        """
+        self._agent_selector = AgentSelector(self.agents)
+        self.agent_selection = self._agent_selector.next()
 
+        self.agent_positions = {
+            agent: (0, 0)
+            for agent in self.possible_agents
+        }
+        self.agent_messages = {agent: 0 for agent in self.possible_agents}
+
+        self.agent_last_action = {agent: None for agent in self.agents}
+
+        if self.render_mode == "human":
+            self.render()
+        return self.observations, self.infos
+
+    def _agent_movement(self, agent_id, action):
+        """ Moves the agent according to the action taken, if valid.
+            Returns the agent new position.
+        """
+        x, y = self.agent_positions[agent_id]
+        dx, dy = MOVE_DELTA[action]
+        target_x, target_y = x + dx, y + dy
+
+        # Check boundaries
+        if (
+            0 <= target_x < self.GRID_SIZE and
+            0 <= target_y < self.GRID_SIZE
+        ):
+            self.agent_positions[agent_id] = (target_x, target_y)
+        else:
+            target_x, target_y = x, y
+
+        return (target_x, target_y)
+
+    def _was_dead_step(self, action):
+        """
+        Handles the case where the agent is already done (truncated or terminated).
+        Returns dummy observations/rewards/truncations so the step() call does not break.
+        """
+        obs = np.zeros_like(self.get_local_view(self.agent_selection))
+        reward = 0
+        truncation = True
+        termination = True
+        return obs, reward, termination, truncation
+
+    def step(self, action_bundle):
+        """
+        step(action_bundle) takes in an (action, message) for the current agent (specified by
+        agent_selection) and needs to update
+        - rewards
+        - _cumulative_rewards (accumulating the rewards)
+        - terminations
+        - truncations
+        - infos
+        - agent_selection (to the next agent)
+        And any internal state used by observe() or render()
+        """
+        agent_id = self.agent_selection
+        action, message = action_bundle
+
+        if (
+            self.terminations[agent_id]
+            or self.truncations[agent_id]
+        ):
+            # handles stepping an agent which is already dead
+            # accepts a None action for the one agent, and moves the agent_selection to
+            # the next dead agent,  or if there are no more dead agents, to the next live agent
+            self.observations[agent_id], self.rewards[agent_id], \
+            self.terminations[agent_id], self.truncations[agent_id] = \
+                self._was_dead_step(action)
+
+            self.agent_messages[agent_id] = 0
+            self.agent_selection = self._agent_selector.next()
+            return
+
+        self.agent_messages[agent_id] = message
+
+        # Move agent according to action
+        new_x, new_y = self._agent_movement(agent_id, action)
+
+        self.rewards = {agent: 0 for agent in self.agents}
+
+        # Handle new tile effects
+        tile = self.grid[new_x, new_y]
+        if tile == EMPTY or tile == START:
+            self.rewards[agent_id] = self.reward_schedule[2]
+            self.observations[agent_id] = {
+                "grid": self.get_local_view(agent_id),
+                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
+            }
+        elif tile == GOAL:
+            self.terminations[agent_id] = True
+            self.rewards[agent_id] = self.reward_schedule[0]
+            self.observations[agent_id] = {
+                "grid": self.get_local_view(agent_id),
+                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
+            }
+        elif tile == HOLE:
+            self.truncations[agent_id] = True
+            self.rewards[agent_id] = self.reward_schedule[1]
+            self.observations[agent_id] = {
+                "grid": np.zeros_like(self.get_local_view(agent_id)),
+                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
+            }
+
+        self.agent_last_action[agent_id] = action
+
+        self.agent_selection = self._agent_selector.next()
+        self._accumulate_rewards()
+
+        if self.render_mode == "human":
+            self.render()
 
 # Elf and stool from https://franuka.itch.io/rpg-snow-tileset
 # All other assets by Mel Tillery http://www.cyaneus.com/
