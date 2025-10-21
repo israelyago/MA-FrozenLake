@@ -111,8 +111,8 @@ class raw_env(AECEnv):
         )
 
         self._action_spaces = {
-            agent: Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)))
-            for agent in self.possible_agents
+            agent: Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)), seed=seed + i)
+            for i, agent in enumerate(self.possible_agents)
         }
         self._observation_spaces = {
             agent: Dict({
@@ -183,7 +183,7 @@ class raw_env(AECEnv):
 
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
-        return Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)))
+        return self._action_spaces[agent]
 
     def render(self):
         """
