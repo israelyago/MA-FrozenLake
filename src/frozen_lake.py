@@ -101,8 +101,10 @@ class raw_env(AECEnv):
         N_AGENTS = 2
         self.N_MESSAGES = 5
         self.N_ACTIONS = 5
+        self.N_OF_TILES_TYPE = 5
         self.GRID_SIZE = 4
-        self.OBS_SIZE = 3
+        self.VISION_RANGE = 1 # tiles around agent
+        self.OBS_SIZE = 2 * self.VISION_RANGE + 1
         self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
         self.reward_schedule = reward_schedule
 
@@ -116,8 +118,13 @@ class raw_env(AECEnv):
         }
         self._observation_spaces = {
             agent: Dict({
-                "grid": Box(low=0, high=1, shape=(self.OBS_SIZE, self.OBS_SIZE, 4), dtype=np.float32),  # 4 tile types
-                "messages": MultiDiscrete([self.N_MESSAGES] * (len(self.possible_agents) - 1)), # later communication channel
+                "grid": Box(low=0, high=1, shape=(self.OBS_SIZE, self.OBS_SIZE, self.N_OF_TILES_TYPE), dtype=np.float32),
+                "messages": MultiDiscrete([self.N_MESSAGES] * (len(self.possible_agents) - 1)),
+                "relative_positions": Box(
+                    low=-1.0, high=1.0,
+                    shape=(len(self.possible_agents) - 1, 3), # (dx, dy, visible)
+                    dtype=np.float32
+                ),
             })
             for agent in self.possible_agents
         }
@@ -164,18 +171,20 @@ class raw_env(AECEnv):
         self.goal_img = None
         self.start_img = None
 
-    def get_local_view(self, agent_id, distance=1):
+    def get_local_view(self, agent_id):
         x, y = self.agent_positions[agent_id]
         # pad the grid to handle edge cases
-        padded = np.pad(self.grid, pad_width=distance, mode='constant', constant_values=OUT_OF_MAP)
+        padded = np.pad(self.grid, pad_width=self.VISION_RANGE, mode='constant', constant_values=OUT_OF_MAP)
 
         # adjust for padding
-        x_p, y_p = x + distance, y + distance
+        x_p, y_p = x + self.VISION_RANGE, y + self.VISION_RANGE
 
         # slice local area
-        local = padded[x_p - distance : x_p + distance + 1,
-                    y_p - distance : y_p + distance + 1]
-        return local
+        local = padded[x_p - self.VISION_RANGE : x_p + self.VISION_RANGE + 1,
+                    y_p - self.VISION_RANGE : y_p + self.VISION_RANGE + 1]
+        # one-hot encode
+        local_one_hot = np.eye(self.N_OF_TILES_TYPE, dtype=np.float32)[local]
+        return local_one_hot
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
@@ -399,6 +408,28 @@ class raw_env(AECEnv):
         termination = True
         return obs, reward, termination, truncation
 
+    def get_relative_positions(self, agent_id):
+        x_self, y_self = self.agent_positions[agent_id]
+        other_agents = [a for a in self.agents if a != agent_id]
+
+        rel_positions = []
+        for other in other_agents:
+            x_o, y_o = self.agent_positions[other]
+            dx = x_o - x_self
+            dy = y_o - y_self
+
+            dist = np.sqrt(dx**2 + dy**2)
+
+            if dist <= self.VISION_RANGE:
+                dx_norm = np.clip(dx / (self.GRID_SIZE - 1), -1.0, 1.0)
+                dy_norm = np.clip(dy / (self.GRID_SIZE - 1), -1.0, 1.0)
+                rel_positions.append([dx_norm, dy_norm, 1.0])
+            else:
+                # Mask unseen agents
+                rel_positions.append([0.0, 0.0, 0.0])
+
+        return np.array(rel_positions, dtype=np.float32)
+
     def step(self, action_bundle):
         """
         step(action_bundle) takes in an (action, message) for the current agent (specified by
@@ -442,6 +473,7 @@ class raw_env(AECEnv):
             self.rewards[agent_id] = self.reward_schedule[2]
             self.observations[agent_id] = {
                 "grid": self.get_local_view(agent_id),
+                "relative_positions": self.get_relative_positions(agent_id),
                 "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
             }
         elif tile == GOAL:
@@ -449,6 +481,7 @@ class raw_env(AECEnv):
             self.rewards[agent_id] = self.reward_schedule[0]
             self.observations[agent_id] = {
                 "grid": self.get_local_view(agent_id),
+                "relative_positions": self.get_relative_positions(agent_id),
                 "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
             }
         elif tile == HOLE:
@@ -456,6 +489,7 @@ class raw_env(AECEnv):
             self.rewards[agent_id] = self.reward_schedule[1]
             self.observations[agent_id] = {
                 "grid": np.zeros_like(self.get_local_view(agent_id)),
+                "relative_positions": np.zeros_like(self.get_relative_positions(agent_id)),
                 "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
             }
 
