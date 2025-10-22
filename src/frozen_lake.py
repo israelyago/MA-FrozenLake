@@ -3,10 +3,11 @@ from os import path
 import numpy as np
 
 import gymnasium as gym
-from gymnasium.envs.toy_text.frozen_lake import generate_random_map, is_valid
-from gymnasium.error import DependencyNotInstalled
+from gymnasium.envs.toy_text.frozen_lake import generate_random_map
 from gymnasium.utils import seeding
 from gymnasium.spaces import Dict, Box, Tuple, Discrete, MultiDiscrete
+import pygame
+import colorsys
 
 from pettingzoo import AECEnv
 from pettingzoo.utils import AgentSelector, wrappers
@@ -128,6 +129,7 @@ class raw_env(AECEnv):
             })
             for agent in self.possible_agents
         }
+        self.agent_colored_elfs = {}
         self.render_mode = render_mode
 
         # Generate game state
@@ -157,7 +159,27 @@ class raw_env(AECEnv):
         self.reward_range = (min(reward_schedule), max(reward_schedule))
 
         # pygame utils
-        self.window_size = (min(64 * ncol, 512), min(64 * nrow, 512))
+        # Main grid
+        main_width = min(64 * ncol, 512)
+        main_height = min(64 * nrow, 512)
+        self.cell_size = (main_width // ncol, main_height // nrow)
+
+        # --- Compute mini-grid sizes (half cell size) ---
+        mini_tile_w = self.cell_size[0] // 2
+        mini_tile_h = self.cell_size[1] // 2
+        mini_grid_w = self.OBS_SIZE * mini_tile_w
+        mini_grid_h = self.OBS_SIZE * mini_tile_h
+
+        # Mini-grids for agent vision
+        spacing = 10
+        extra_width = len(self.possible_agents) * (mini_grid_w + spacing)
+        total_width = main_width + extra_width
+        total_height = max(main_height, mini_grid_h)
+
+        # --- Final window size ---
+        self.window_size = (total_width, total_height)
+
+        self.window_surface = None
         self.cell_size = (
             self.window_size[0] // ncol,
             self.window_size[1] // nrow,
@@ -167,6 +189,7 @@ class raw_env(AECEnv):
         self.hole_img = None
         self.cracked_hole_img = None
         self.ice_img = None
+        self.ice_img_dark = None
         self.elf_images = None
         self.goal_img = None
         self.start_img = None
@@ -213,19 +236,34 @@ class raw_env(AECEnv):
             return self._render_gui(self.render_mode)
 
     def _render_gui(self, mode):
-        try:
-            import pygame
-        except ImportError as e:
-            raise DependencyNotInstalled(
-                'pygame is not installed, run `pip install "gymnasium[toy-text]"`'
-            ) from e
+        ncol, nrow = self.grid.shape
 
+        # --- Compute main grid size ---
+        main_width = min(64 * ncol, 512)
+        main_height = min(64 * nrow, 512)
+        self.cell_size = (main_width // ncol, main_height // nrow)
+
+        # --- Compute mini-grid sizes (half cell size) ---
+        mini_tile_w = self.cell_size[0] // 2
+        mini_tile_h = self.cell_size[1] // 2
+        mini_grid_w = self.OBS_SIZE * mini_tile_w
+        mini_grid_h = self.OBS_SIZE * mini_tile_h
+
+        # --- Add space for mini-grids on the right ---
+        spacing = 10
+        extra_width = len(self.agents) * (mini_grid_w + spacing)
+        total_width = main_width + extra_width
+        total_height = max(main_height, mini_grid_h)
+
+        # --- Final window size ---
+        self.window_size = (total_width, total_height)
+
+        # --- Initialize window ---
         if self.window_surface is None:
             pygame.init()
-
             if mode == "human":
                 pygame.display.init()
-                pygame.display.set_caption("Frozen Lake")
+                pygame.display.set_caption("Multi Agent Frozen Lake")
                 self.window_surface = pygame.display.set_mode(self.window_size)
             elif mode == "rgb_array":
                 self.window_surface = pygame.Surface(self.window_size)
@@ -251,6 +289,10 @@ class raw_env(AECEnv):
             self.ice_img = pygame.transform.scale(
                 pygame.image.load(file_name), self.cell_size
             )
+        if self.ice_img_dark is None:
+            file_name = path.join(path.dirname(__file__), "img/ice.png")
+            self.ice_img_dark = self._darken_surface(self.ice_img, factor=0.7)
+
         if self.goal_img is None:
             file_name = path.join(path.dirname(__file__), "img/goal.png")
             self.goal_img = pygame.transform.scale(
@@ -275,22 +317,31 @@ class raw_env(AECEnv):
                 UP: pygame.transform.scale(pygame.image.load(elfs[UP]), self.cell_size),
             }
 
-        ncols, nrows = self.grid.shape
-        for y in range(nrows):
-            for x in range(ncols):
-                pos = (x * self.cell_size[0], y * self.cell_size[1])
+            n_agents = len(self.possible_agents)
+            for i, agent_id in enumerate(self.possible_agents):
+                hue_offset = i / n_agents # evenly spaced hues
+                self.agent_colored_elfs[agent_id] = {
+                    k: self._hue_shift(v, hue_offset)
+                    for k, v in self.elf_images.items()
+                }
+
+        # --- Draw main grid ---
+        for agent_y in range(nrow):
+            for agent_x in range(ncol):
+                pos = (agent_x * self.cell_size[0], agent_y * self.cell_size[1])
                 rect = (*pos, *self.cell_size)
 
                 self.window_surface.blit(self.ice_img, pos)
-                if self.grid[x, y] == HOLE:
+                if self.grid[agent_x, agent_y] == HOLE:
                     self.window_surface.blit(self.hole_img, pos)
-                elif self.grid[x, y] == GOAL:
+                elif self.grid[agent_x, agent_y] == GOAL:
                     self.window_surface.blit(self.goal_img, pos)
-                elif self.grid[x, y] == START:
+                elif self.grid[agent_x, agent_y] == START:
                     self.window_surface.blit(self.start_img, pos)
 
                 pygame.draw.rect(self.window_surface, (180, 200, 230), rect, 1)
 
+        # --- Draw agents on main grid ---
         for agent_id in self.agents:
             bot_x, bot_y = self.agent_positions[agent_id]
             cell_rect = (bot_x * self.cell_size[0], bot_y * self.cell_size[1])
@@ -299,13 +350,76 @@ class raw_env(AECEnv):
             if self.agent_last_action[agent_id] not in (None, DO_NOTHING):
                 image_from_last_action = self.agent_last_action[agent_id]
 
-            elf_img = self.elf_images[image_from_last_action]
+            elf_img = self.agent_colored_elfs[agent_id][image_from_last_action]
 
             if self.grid[bot_x, bot_y] == HOLE:
                 self.window_surface.blit(self.cracked_hole_img, cell_rect)
             else:
                 self.window_surface.blit(elf_img, cell_rect)
 
+        # --- Draw each agent's mini-grid on the right ---
+        center_x, center_y = self.OBS_SIZE // 2, self.OBS_SIZE // 2
+        for i, agent_id in enumerate(self.agents):
+            local_patch = self.get_local_view(agent_id)
+            local_int = np.argmax(local_patch, axis=-1)
+
+            # compute top-left of this agent's window
+            top_left_x = main_width + spacing + i * (mini_grid_w + spacing)
+            top_left_y = 10
+
+            agent_x, agent_y = self.agent_positions[agent_id]
+
+            for row in range(self.OBS_SIZE):
+                for col in range(self.OBS_SIZE):
+                    tile = local_int[col, row]
+                    pos = (top_left_x + col * mini_tile_w, top_left_y + row * mini_tile_h)
+
+                    # --- Always draw ice as background first ---
+                    base_img = pygame.transform.scale(self.ice_img, (mini_tile_w, mini_tile_h))
+                    self.window_surface.blit(base_img, pos)
+
+                    # --- Then draw tile overlay if any ---
+                    if tile == HOLE and (col, row) == (center_x, center_y):
+                        img = self.cracked_hole_img
+                    elif tile == HOLE:
+                        img = self.hole_img
+                    elif tile == GOAL:
+                        img = self.goal_img
+                    elif tile == START:
+                        img = self.start_img
+                    elif tile == OUT_OF_MAP:
+                        img = self.ice_img_dark
+                    else:
+                        img = None
+
+                    if img is not None:
+                        img_scaled = pygame.transform.scale(img, (mini_tile_w, mini_tile_h))
+                        self.window_surface.blit(img_scaled, pos)
+
+                    rect = pygame.Rect(pos[0], pos[1], mini_tile_w, mini_tile_h)
+                    pygame.draw.rect(self.window_surface, (100, 100, 100), rect, 1)
+
+            # Draw the agent icon in the center of mini-grid
+            center_pos = (
+                top_left_x + (self.OBS_SIZE // 2) * mini_tile_w,
+                top_left_y + (self.OBS_SIZE // 2) * mini_tile_h,
+            )
+            if self.grid[agent_x, agent_y] != HOLE:
+                image_from_last_action = DOWN # Default image
+                if self.agent_last_action[agent_id] not in (None, DO_NOTHING):
+                    image_from_last_action = self.agent_last_action[agent_id]
+
+                elf_img = self.agent_colored_elfs[agent_id][image_from_last_action]
+
+                elf_img_scaled = pygame.transform.scale(elf_img, (mini_tile_w, mini_tile_h))
+                self.window_surface.blit(elf_img_scaled, center_pos)
+
+                # Label each mini-grid
+                font = pygame.font.SysFont(None, 20)
+                label = font.render(agent_id, True, (255, 255, 255))
+                self.window_surface.blit(label, (top_left_x, top_left_y - 15))
+
+        # --- Update display ---
         if mode == "human":
             pygame.event.pump()
             pygame.display.update()
@@ -500,6 +614,51 @@ class raw_env(AECEnv):
 
         if self.render_mode == "human":
             self.render()
+
+    def _darken_surface(self, surface, factor=0.5):
+        """
+        Return a new Surface that's a darker copy of `surface`.
+        factor in (0..1] where 1.0 = original brightness, 0.0 = black.
+        Preserves the alpha channel.
+        """
+        surf = surface.convert_alpha()
+
+        # RGB array (shape (w,h,3))
+        rgb = pygame.surfarray.array3d(surf).astype(np.float32)
+        rgb *= factor
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+        # Create a surface from RGB, then reapply alpha
+        dark = pygame.surfarray.make_surface(rgb)
+        dark = dark.convert_alpha()
+
+        alpha = pygame.surfarray.array_alpha(surf)
+        pygame.surfarray.pixels_alpha(dark)[:] = alpha
+
+        return dark
+
+    def _hue_shift(self, surface, shift):
+        """Shift hue of a pygame surface (0–1 scale)."""
+        surface = surface.convert_alpha()
+        arr = pygame.surfarray.pixels3d(surface).copy()
+        alpha = pygame.surfarray.pixels_alpha(surface).copy()
+
+        arr = arr.astype(np.float32) / 255.0
+        r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+
+        h, s, v = np.vectorize(colorsys.rgb_to_hsv)(r, g, b)
+        h = (h + shift) % 1.0
+        r2, g2, b2 = np.vectorize(colorsys.hsv_to_rgb)(h, s, v)
+
+        arr[..., 0] = r2 * 255
+        arr[..., 1] = g2 * 255
+        arr[..., 2] = b2 * 255
+
+        shifted = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        pygame.surfarray.blit_array(shifted, arr.astype(np.uint8))
+        pygame.surfarray.pixels_alpha(shifted)[:] = alpha
+
+        return shifted
 
 # Elf and stool from https://franuka.itch.io/rpg-snow-tileset
 # All other assets by Mel Tillery http://www.cyaneus.com/
