@@ -532,7 +532,7 @@ class raw_env(AECEnv):
             dx = x_o - x_self
             dy = y_o - y_self
 
-            dist = np.sqrt(dx**2 + dy**2)
+            dist = max(abs(dx), abs(dy)) # Chebyshev distance
 
             if dist <= self.VISION_RANGE:
                 dx_norm = np.clip(dx / (self.GRID_SIZE - 1), -1.0, 1.0)
