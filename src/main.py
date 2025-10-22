@@ -23,22 +23,46 @@ def run_ppo(env, steps: int):
     model.save("trained_model")    
     return model
 
+# All go to goal
+TRAJECTORY = [
+    frozen_lake.DOWN, frozen_lake.DOWN, frozen_lake.DOWN,
+    frozen_lake.DOWN, frozen_lake.DOWN, frozen_lake.DOWN,
+    frozen_lake.RIGHT, frozen_lake.RIGHT, frozen_lake.RIGHT,
+    frozen_lake.RIGHT, frozen_lake.RIGHT, frozen_lake.RIGHT,
+    frozen_lake.DOWN, frozen_lake.DOWN, frozen_lake.DOWN,
+    frozen_lake.RIGHT, frozen_lake.RIGHT, frozen_lake.DO_NOTHING, 
+    frozen_lake.LEFT, frozen_lake.DO_NOTHING, frozen_lake.DO_NOTHING, 
+    frozen_lake.DO_NOTHING, frozen_lake.DO_NOTHING, frozen_lake.RIGHT, 
+    frozen_lake.RIGHT, frozen_lake.DO_NOTHING, frozen_lake.DO_NOTHING, 
+]
+
 def main():
     seed = 42
     env = frozen_lake.env(seed=seed, render_mode="human")
     env.reset(seed=seed)
 
+    trajectory_counter = 0
     for agent in env.agent_iter():
-        observation, reward, termination, truncation, info = env.last()
+        obs, reward, termination, truncation, info = env.last()        
         if termination or truncation:
-            action = (frozen_lake.DO_NOTHING, 0)
+            action_bundle = (None, 0)
         else:
-            # this is where you would insert your policy
-            action = env.action_space(agent).sample()
-        env.step(action)
+            action_bundle = env.action_space(agent).sample()        
 
-        all_done = all(env.terminations[a] or env.truncations[a] for a in env.possible_agents)
+            # DEBUG
+            if trajectory_counter < len(TRAJECTORY):
+                action = TRAJECTORY[trajectory_counter]
+                action_bundle = (action, 0)
+
+        env.step(action_bundle)
+
+        trajectory_counter += 1
+
+        all_done = all(env.terminations[a] or env.truncations[a] for a in env.agents)
         if all_done:
+            for agent in env.possible_agents:
+                last_reward = env.rewards[agent]
+                print(f"Agent: {agent} won as last reward: {last_reward}")
             break
     
     env.close()

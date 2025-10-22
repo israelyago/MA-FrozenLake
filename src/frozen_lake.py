@@ -85,7 +85,7 @@ class raw_env(AECEnv):
                 map_name: str = "4x4",
                 is_slippery: bool = True,
                 success_rate: float = 1.0 / 3.0,
-                reward_schedule: tuple[int, int, int] = (1, 0, 0),
+                reward_schedule: tuple[int, int, int, int] = (1, 0, -1, -0.01),
         ):
         """
         The init method takes in environment arguments and
@@ -99,7 +99,7 @@ class raw_env(AECEnv):
 
         These attributes should not be changed after initialization.
         """
-        N_AGENTS = 2
+        N_AGENTS = 3
         self.N_MESSAGES = 5
         self.N_ACTIONS = 5
         self.N_OF_TILES_TYPE = 5
@@ -346,11 +346,7 @@ class raw_env(AECEnv):
             bot_x, bot_y = self.agent_positions[agent_id]
             cell_rect = (bot_x * self.cell_size[0], bot_y * self.cell_size[1])
 
-            image_from_last_action = DOWN # Default image
-            if self.agent_last_action[agent_id] not in (None, DO_NOTHING):
-                image_from_last_action = self.agent_last_action[agent_id]
-
-            elf_img = self.agent_colored_elfs[agent_id][image_from_last_action]
+            elf_img = self._get_elf_image(agent_id)
 
             if self.grid[bot_x, bot_y] == HOLE:
                 self.window_surface.blit(self.cracked_hole_img, cell_rect)
@@ -405,11 +401,7 @@ class raw_env(AECEnv):
                 top_left_y + (self.OBS_SIZE // 2) * mini_tile_h,
             )
             if self.grid[agent_x, agent_y] != HOLE:
-                image_from_last_action = DOWN # Default image
-                if self.agent_last_action[agent_id] not in (None, DO_NOTHING):
-                    image_from_last_action = self.agent_last_action[agent_id]
-
-                elf_img = self.agent_colored_elfs[agent_id][image_from_last_action]
+                elf_img = self._get_elf_image(agent_id)
 
                 elf_img_scaled = pygame.transform.scale(elf_img, (mini_tile_w, mini_tile_h))
                 self.window_surface.blit(elf_img_scaled, center_pos)
@@ -418,6 +410,31 @@ class raw_env(AECEnv):
                 font = pygame.font.SysFont(None, 20)
                 label = font.render(agent_id, True, (255, 255, 255))
                 self.window_surface.blit(label, (top_left_x, top_left_y - 15))
+
+                # Draw subtle border around self agent
+                border_rect = pygame.Rect(center_pos[0], center_pos[1], mini_tile_w, mini_tile_h)
+                pygame.draw.rect(self.window_surface, (255, 0, 0), border_rect, 1)  # red border, width=1
+
+            # --- Draw other agents visible in this mini-grid ---
+            for other_id in self.agents:
+                if other_id == agent_id:
+                    continue  # skip self
+
+                other_x, other_y = self.agent_positions[other_id]
+                # compute relative coords in local patch
+                rel_x = other_x - agent_x + center_x
+                rel_y = other_y - agent_y + center_y
+
+                if 0 <= rel_x < self.OBS_SIZE and 0 <= rel_y < self.OBS_SIZE:
+                    pos = (
+                        top_left_x + rel_x * mini_tile_w,
+                        top_left_y + rel_y * mini_tile_h,
+                    )
+                    # Use other agent's last action for sprite direction
+                    elf_img = self._get_elf_image(other_id)
+
+                    elf_img_scaled = pygame.transform.scale(elf_img, (mini_tile_w, mini_tile_h))
+                    self.window_surface.blit(elf_img_scaled, pos)
 
         # --- Update display ---
         if mode == "human":
@@ -428,6 +445,12 @@ class raw_env(AECEnv):
             return np.transpose(
                 np.array(pygame.surfarray.pixels3d(self.window_surface)), axes=(1, 0, 2)
             )
+
+    def _get_elf_image(self, agent_id):
+        elf_direction = DOWN \
+            if self.agent_last_action[agent_id] in (None, DO_NOTHING) \
+            else self.agent_last_action[agent_id]
+        return self.agent_colored_elfs[agent_id][elf_direction]
 
     def _render_text(self):
         raise NotImplementedError("Text rendering not implemented yet.")
@@ -467,13 +490,13 @@ class raw_env(AECEnv):
         if seed is not None:
             self.np_random, self.np_random_seed = seeding.np_random(seed)
         self.agents = self.possible_agents[:]
-        self.rewards = {agent: 0 for agent in self.agents}
-        self._cumulative_rewards = {agent: 0 for agent in self.agents}
-        self.terminations = {agent: False for agent in self.agents}
-        self.truncations = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
-        self.state = {agent: None for agent in self.agents}
-        self.observations = {agent: None for agent in self.agents}
+        self.rewards = {agent: 0 for agent in self.possible_agents}
+        self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
+        self.terminations = {agent: False for agent in self.possible_agents}
+        self.truncations = {agent: False for agent in self.possible_agents}
+        self.infos = {agent: {} for agent in self.possible_agents}
+        self.state = {agent: None for agent in self.possible_agents}
+        self.observations = {agent: None for agent in self.possible_agents}
         """
         Our AgentSelector utility allows easy cyclic stepping through the agents list.
         """
@@ -486,7 +509,9 @@ class raw_env(AECEnv):
         }
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
 
-        self.agent_last_action = {agent: None for agent in self.agents}
+        self.agent_positions = {agent: (0, 0) for agent in self.possible_agents}
+        self.agent_messages = {agent: 0 for agent in self.possible_agents}
+        self.agent_last_action = {agent: None for agent in self.possible_agents}
 
         if self.render_mode == "human":
             self.render()
@@ -510,17 +535,6 @@ class raw_env(AECEnv):
             target_x, target_y = x, y
 
         return (target_x, target_y)
-
-    def _was_dead_step(self, action):
-        """
-        Handles the case where the agent is already done (truncated or terminated).
-        Returns dummy observations/rewards/truncations so the step() call does not break.
-        """
-        obs = np.zeros_like(self.get_local_view(self.agent_selection))
-        reward = 0
-        truncation = True
-        termination = True
-        return obs, reward, termination, truncation
 
     def get_relative_positions(self, agent_id):
         x_self, y_self = self.agent_positions[agent_id]
@@ -559,18 +573,17 @@ class raw_env(AECEnv):
         agent_id = self.agent_selection
         action, message = action_bundle
 
+        goal_x, goal_y = self.GRID_SIZE - 1, self.GRID_SIZE - 1
+        all_goal = all(self.agent_positions[a] == (goal_x, goal_y) for a in self.possible_agents)
+
+        if all_goal:
+            for a in self.possible_agents:
+                self.terminations[a] = True
+
         if (
             self.terminations[agent_id]
             or self.truncations[agent_id]
         ):
-            # handles stepping an agent which is already dead
-            # accepts a None action for the one agent, and moves the agent_selection to
-            # the next dead agent,  or if there are no more dead agents, to the next live agent
-            self.observations[agent_id], self.rewards[agent_id], \
-            self.terminations[agent_id], self.truncations[agent_id] = \
-                self._was_dead_step(action)
-
-            self.agent_messages[agent_id] = 0
             self.agent_selection = self._agent_selector.next()
             return
 
@@ -579,35 +592,36 @@ class raw_env(AECEnv):
         # Move agent according to action
         new_x, new_y = self._agent_movement(agent_id, action)
 
-        self.rewards = {agent: 0 for agent in self.agents}
-
+        reward = 0
+        grid = self.get_local_view(agent_id)
+        relative_positions = self.get_relative_positions(agent_id)
+        messages = [self.agent_messages[a] for a in self.possible_agents if a != agent_id]
         # Handle new tile effects
         tile = self.grid[new_x, new_y]
         if tile == EMPTY or tile == START:
-            self.rewards[agent_id] = self.reward_schedule[2]
-            self.observations[agent_id] = {
-                "grid": self.get_local_view(agent_id),
-                "relative_positions": self.get_relative_positions(agent_id),
-                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
-            }
+            reward = self.reward_schedule[3]
         elif tile == GOAL:
-            self.terminations[agent_id] = True
-            self.rewards[agent_id] = self.reward_schedule[0]
-            self.observations[agent_id] = {
-                "grid": self.get_local_view(agent_id),
-                "relative_positions": self.get_relative_positions(agent_id),
-                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
-            }
+            reward = self.reward_schedule[1]
         elif tile == HOLE:
             self.truncations[agent_id] = True
-            self.rewards[agent_id] = self.reward_schedule[1]
-            self.observations[agent_id] = {
-                "grid": np.zeros_like(self.get_local_view(agent_id)),
-                "relative_positions": np.zeros_like(self.get_relative_positions(agent_id)),
-                "messages": [self.agent_messages[a] for a in self.agents if a != agent_id],
-            }
+            reward = self.reward_schedule[2]
+            grid = np.zeros_like(grid)
+            relative_positions = np.zeros_like(relative_positions)
+
+        self.rewards[agent_id] = reward
+        self.observations[agent_id] = {
+            "grid": grid,
+            "relative_positions": relative_positions,
+            "messages": messages,
+        }
 
         self.agent_last_action[agent_id] = action
+
+        all_goal = all(self.agent_positions[a] == (goal_x, goal_y) for a in self.possible_agents)
+
+        if all_goal:
+            for agent_id in self.possible_agents:
+                self.rewards[agent_id] += self.reward_schedule[0]
 
         self.agent_selection = self._agent_selector.next()
         self._accumulate_rewards()
