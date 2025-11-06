@@ -50,13 +50,13 @@ MAPS = {
     ],
 }
 
-def env(seed=None, render_mode=None):
+def env(seed=None, render_mode=None, flatten_observations=False):
     """
     The env function often wraps the environment in wrappers by default.
     You can find full documentation for these methods
     elsewhere in the PettingZoo developer documentation.
     """
-    env = raw_env(seed=seed, render_mode=render_mode)
+    env = raw_env(seed=seed, render_mode=render_mode, flatten_observations=flatten_observations)
     # this wrapper helps error handling for discrete action spaces
     env = wrappers.AssertOutOfBoundsWrapper(env)
     # Provides a wide vareity of helpful user errors
@@ -76,16 +76,18 @@ class raw_env(AECEnv):
         "render_modes": ["human"], 
         "name": "MA_FrozenLake_v0",
         "render_fps": 4,
+        "is_parallelizable": True,
     }
 
     def __init__(self,
-                seed=None,
+                seed=42,
                 render_mode=None,
                 desc: list[str] = None,
                 map_name: str = "4x4",
                 is_slippery: bool = True,
                 success_rate: float = 1.0 / 3.0,
                 reward_schedule: tuple[int, int, int, int] = (1, 0, -1, -0.01),
+                flatten_observations=False,
         ):
         """
         The init method takes in environment arguments and
@@ -108,6 +110,9 @@ class raw_env(AECEnv):
         self.OBS_SIZE = 2 * self.VISION_RANGE + 1
         self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
         self.reward_schedule = reward_schedule
+        self.flatten_observations = flatten_observations
+        self.max_steps = 50
+        self.current_step = 0
 
         self.agent_name_mapping = dict(
             zip(self.possible_agents, list(range(len(self.possible_agents))))
@@ -129,6 +134,15 @@ class raw_env(AECEnv):
             })
             for agent in self.possible_agents
         }
+        if self.flatten_observations:
+            for agent in self.possible_agents:
+                flat_size = (
+                    np.prod(self._observation_spaces[agent]["grid"].shape)
+                    + np.prod(self._observation_spaces[agent]["relative_positions"].shape)
+                    + len(self._observation_spaces[agent]["messages"].nvec)
+                )
+                self._observation_spaces[agent] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(int(flat_size),), dtype=np.float32)
+        
         self.agent_colored_elfs = {}
         self.render_mode = render_mode
 
@@ -512,6 +526,24 @@ class raw_env(AECEnv):
         self.agent_positions = {agent: (0, 0) for agent in self.possible_agents}
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
         self.agent_last_action = {agent: None for agent in self.possible_agents}
+        self.current_step = 0
+
+        for agent_id in self.possible_agents:
+            grid = self.get_local_view(agent_id)
+            relative_positions = self.get_relative_positions(agent_id)
+            messages = [self.agent_messages[a] for a in self.possible_agents if a != agent_id]
+            obs = {
+                "grid": grid,
+                "relative_positions": relative_positions,
+                "messages": messages,
+            }
+            if self.flatten_observations:
+                grid_flat = obs["grid"].flatten()
+                rel_flat = obs["relative_positions"].flatten()
+                msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
+                obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
+            self.observations[agent_id] = obs
+            
 
         if self.render_mode == "human":
             self.render()
@@ -538,7 +570,7 @@ class raw_env(AECEnv):
 
     def get_relative_positions(self, agent_id):
         x_self, y_self = self.agent_positions[agent_id]
-        other_agents = [a for a in self.agents if a != agent_id]
+        other_agents = [a for a in self.possible_agents if a != agent_id]
 
         rel_positions = []
         for other in other_agents:
@@ -570,8 +602,16 @@ class raw_env(AECEnv):
         - agent_selection (to the next agent)
         And any internal state used by observe() or render()
         """
+        self.current_step += 1
+        if self.current_step >= self.max_steps:
+            for a in self.possible_agents:
+                self.truncations[a] = True
+                self.rewards[a] = self.reward_schedule[2]
+
         agent_id = self.agent_selection
-        action, message = action_bundle
+        action, message = DO_NOTHING, 0
+        if action_bundle != None:
+            action, message = action_bundle
 
         goal_x, goal_y = self.GRID_SIZE - 1, self.GRID_SIZE - 1
         all_goal = all(self.agent_positions[a] == (goal_x, goal_y) for a in self.possible_agents)
@@ -580,22 +620,16 @@ class raw_env(AECEnv):
             for a in self.possible_agents:
                 self.terminations[a] = True
 
-        if (
-            self.terminations[agent_id]
-            or self.truncations[agent_id]
-        ):
-            self.agent_selection = self._agent_selector.next()
-            return
-
         self.agent_messages[agent_id] = message
 
         # Move agent according to action
         new_x, new_y = self._agent_movement(agent_id, action)
-
+        # print(f"Agent {agent_id} new pos ({new_x}, {new_y})")
         reward = 0
         grid = self.get_local_view(agent_id)
         relative_positions = self.get_relative_positions(agent_id)
         messages = [self.agent_messages[a] for a in self.possible_agents if a != agent_id]
+
         # Handle new tile effects
         tile = self.grid[new_x, new_y]
         if tile == EMPTY or tile == START:
@@ -609,11 +643,17 @@ class raw_env(AECEnv):
             relative_positions = np.zeros_like(relative_positions)
 
         self.rewards[agent_id] = reward
-        self.observations[agent_id] = {
+        obs = {
             "grid": grid,
             "relative_positions": relative_positions,
             "messages": messages,
         }
+        if self.flatten_observations:
+            grid_flat = obs["grid"].flatten()
+            rel_flat = obs["relative_positions"].flatten()
+            msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
+            obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
+        self.observations[agent_id] = obs
 
         self.agent_last_action[agent_id] = action
 
@@ -624,6 +664,19 @@ class raw_env(AECEnv):
                 self.rewards[agent_id] += self.reward_schedule[0]
 
         self.agent_selection = self._agent_selector.next()
+        # Check time step limit
+        if (
+            self.terminations[agent_id]
+            or self.truncations[agent_id]
+        ):
+            if self.flatten_observations:
+                self.observations[agent_id] = np.zeros_like(self.observations[agent_id])
+            self.agent_messages[agent_id] = 0
+
+        if all(self.terminations[a] or self.truncations[a] for a in self.possible_agents):
+            # print("All agents done — ending episode.")
+            self.agents = []
+
         self._accumulate_rewards()
 
         if self.render_mode == "human":
