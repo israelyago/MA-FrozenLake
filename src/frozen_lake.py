@@ -559,6 +559,12 @@ class raw_env(AECEnv):
             action, message = action_bundle
             action = MovementAction(action)
 
+        if (
+            self.terminations[agent_id]
+            or self.truncations[agent_id]
+        ):
+            return
+
         self.agent_messages[agent_id] = message
 
         # Move agent according to action
