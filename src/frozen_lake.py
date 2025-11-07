@@ -340,7 +340,7 @@ class raw_env(AECEnv):
 
         # --- Draw each agent's mini-grid on the right ---
         center_x, center_y = self.OBS_SIZE // 2, self.OBS_SIZE // 2
-        for i, agent_id in enumerate(self.agents):
+        for i, agent_id in enumerate(self.possible_agents):
             local_patch = self.game_engine.get_local_view(agent_id)
             local_int = np.argmax(local_patch, axis=-1)
 
@@ -401,7 +401,7 @@ class raw_env(AECEnv):
                 pygame.draw.rect(self.window_surface, (255, 0, 0), border_rect, 1)  # red border, width=1
 
             # --- Draw other agents visible in this mini-grid ---
-            for other_id in self.agents:
+            for other_id in self.possible_agents:
                 if other_id == agent_id:
                     continue  # skip self
 
