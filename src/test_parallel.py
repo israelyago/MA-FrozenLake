@@ -20,5 +20,6 @@ for _ in range(100):
     if all(terminations.values()) or all(truncations.values()):
         break
 
+env.close()
 end = time.time()
 print(f"Average step time: {(end - start) / N:.6f} seconds per step")
