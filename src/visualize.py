@@ -36,44 +36,44 @@ def main():
     algo = PPO.from_checkpoint(checkpoint_dir)
     env = env_creator()
 
-    obs, infos = env.reset()
-    done = False
-
     module = algo.get_module("shared_policy")  # single shared policy module
     N_ACTIONS = 5
 
-    while not done:
-        actions = {a: (0, 0) for a in env.agents}
+    for run in range(10):
+        obs, infos = env.reset()
+        done = False
+        while not done:
+            actions = {a: (0, 0) for a in env.agents}
 
-        for agent in env.agents:
-            if agent not in obs:
-                continue
-            obs_np = np.array(obs[agent], dtype=np.float32)
-            obs_tensor = torch.tensor(obs_np, dtype=torch.float32).unsqueeze(
-                0
-            )  # (1, obs_dim)
+            for agent in env.agents:
+                if agent not in obs:
+                    continue
+                obs_np = np.array(obs[agent], dtype=np.float32)
+                obs_tensor = torch.tensor(obs_np, dtype=torch.float32).unsqueeze(
+                    0
+                )  # (1, obs_dim)
 
-            # Build batch dict for forward_inference
-            batch = {"obs": obs_tensor}
-            with torch.no_grad():
-                out = module.forward_inference(batch)
+                # Build batch dict for forward_inference
+                batch = {"obs": obs_tensor}
+                with torch.no_grad():
+                    out = module.forward_inference(batch)
 
-            logits = out["action_dist_inputs"].squeeze(
-                0
-            )  # shape: (N_ACTIONS + N_MESSAGES,)
+                logits = out["action_dist_inputs"].squeeze(
+                    0
+                )  # shape: (N_ACTIONS + N_MESSAGES,)
 
-            move_logits = torch.distributions.Categorical(logits=logits[:N_ACTIONS])
-            msg_logits = torch.distributions.Categorical(logits=logits[N_ACTIONS:])
+                move_logits = torch.distributions.Categorical(logits=logits[:N_ACTIONS])
+                msg_logits = torch.distributions.Categorical(logits=logits[N_ACTIONS:])
 
-            move = move_logits.sample().item()
-            msg = msg_logits.sample().item()
+                move = move_logits.sample().item()
+                msg = msg_logits.sample().item()
 
-            action = (move, msg)
-            actions[agent] = action
+                action = (move, msg)
+                actions[agent] = action
 
-        obs, rewards, terminations, truncations, infos = env.step(actions)
+            obs, rewards, terminations, truncations, infos = env.step(actions)
 
-        done = all(terminations.values()) or all(truncations.values())
+            done = all(terminations.values()) or all(truncations.values())
 
     env.close()
 
