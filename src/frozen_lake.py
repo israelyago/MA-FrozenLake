@@ -33,11 +33,6 @@ def env(seed=None, render_mode=None, flatten_observations=False):
     elsewhere in the PettingZoo developer documentation.
     """
     env = raw_env(seed=seed, render_mode=render_mode, flatten_observations=flatten_observations)
-    # this wrapper helps error handling for discrete action spaces
-    # env = wrappers.AssertOutOfBoundsWrapper(env)
-    # Provides a wide vareity of helpful user errors
-    # Strongly recommended
-    # env = wrappers.OrderEnforcingWrapper(env)
     return env
 
 class raw_env(ParallelEnv):
@@ -55,16 +50,17 @@ class raw_env(ParallelEnv):
         "is_parallelizable": True,
     }
 
-    def __init__(self,
-                seed=42,
-                render_mode=None,
-                desc: list[str] = None,
-                map_name: str = "4x4",
-                is_slippery: bool = True,
-                success_rate: float = 1.0 / 3.0,
-                reward_schedule: tuple[int, int, int, int] = (1, 0, -1, -0.01),
-                flatten_observations=False,
-        ):
+    def __init__(
+        self,
+        seed=42,
+        render_mode=None,
+        desc: list[str] = None,
+        map_name: str = "4x4",
+        is_slippery: bool = True,
+        success_rate: float = 1.0 / 3.0,
+        reward_schedule: tuple[int, int, int, int] = (1, 1, -1, -0.01),
+        flatten_observations=False,
+    ):
         """
         The init method takes in environment arguments and
          should define the following attributes:
@@ -79,8 +75,8 @@ class raw_env(ParallelEnv):
         """
         N_AGENTS = 2
         self.N_MESSAGES = 5
-        self.N_ACTIONS = 5
-        self.N_OF_TILES_TYPE = 5
+        self.N_ACTIONS = len(MovementAction)
+        self.N_OF_TILES_TYPE = len(Tile)
         self.GRID_SIZE = 4
         self.VISION_RANGE = 2 # tiles around agent
         self.OBS_SIZE = 2 * self.VISION_RANGE + 1
@@ -121,21 +117,6 @@ class raw_env(ParallelEnv):
         
         self.agent_colored_elfs = {}
         self.render_mode = render_mode
-
-        # Generate game state
-        # self.grid = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int8)
-        # m = generate_random_map(size=self.GRID_SIZE, seed=seed)
-        # for y in range(self.GRID_SIZE):
-        #     for x in range(self.GRID_SIZE):
-        #         tile = m[y][x]
-        #         if tile == "H":
-        #             self.grid[x, y] = HOLE
-        #         elif tile == "G":
-        #             self.grid[x, y] = GOAL
-        #         elif tile == "F":
-        #             self.grid[x, y] = EMPTY
-        #         elif tile == "S":
-        #             self.grid[x, y] = START
         
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
 

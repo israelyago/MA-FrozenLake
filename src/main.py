@@ -88,18 +88,13 @@ def main():
     print("⚛︎ Total trainable parameters:", total_params)
 
     print("🤖 Will train a model with PPO")
-    reward_threshold = 0.0  # stop when mean reward > 0
-    max_iterations = 200
+    max_iterations = 100
 
     for i in range(1, max_iterations + 1):
         result = algo.train()
         
         mean_reward = result["env_runners"]["episode_return_mean"]
         print(f"🧪 Iteration {i}: mean_reward={mean_reward}")
-
-        if mean_reward > reward_threshold:
-            print(f"🚀 Stopping training: mean reward {mean_reward} exceeded threshold")
-            break
     print("💾 Saving model to ma_frozen_lake_ppo")
     save_path = os.path.abspath("./checkpoints/ma_frozen_lake_ppo")
     algo.save(save_path)
