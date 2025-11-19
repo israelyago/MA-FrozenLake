@@ -541,6 +541,11 @@ class raw_env(ParallelEnv):
             f"Action bundle should be a dict, got ({type(action_bundle)}): {action_bundle}"
         )
         for agent_id in action_bundle:
+
+            if agent_id in self.truncateds and self.truncateds[agent_id]:
+                print(f"🚨 Agent {agent_id} should't be acting")
+                continue
+
             action, message = action_bundle[agent_id]
             if isinstance(action, np.int32):
                 action = action.item()
@@ -548,11 +553,8 @@ class raw_env(ParallelEnv):
                 message = message.item()
 
             new_x, new_y = self.game_engine.agent_movement(agent_id, action)
-            reward = 0
-            grid = self.game_engine.get_local_view(agent_id)
-            relative_positions = self.game_engine.get_relative_positions(agent_id)
-
             # Handle new tile effects
+            reward = 0
             tile = self.game_engine.tile_at(new_x, new_y)
             if tile == Tile.EMPTY or tile == Tile.START:
                 reward = self.reward_schedule[3]
@@ -561,8 +563,6 @@ class raw_env(ParallelEnv):
             elif tile == Tile.HOLE:
                 self.truncateds[agent_id] = True
                 reward = self.reward_schedule[2]
-                grid = np.zeros_like(grid)
-                relative_positions = np.zeros_like(relative_positions)
 
             self.agent_messages[agent_id] = message
             self.rewards[agent_id] = reward

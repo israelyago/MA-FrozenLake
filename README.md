@@ -9,9 +9,3 @@ To run an env example, just:
 ```bash
 uv run python src/test_parallel.py
 ```
-
-or
-
-```bash
-uv run python src/test_aec.py
-```
