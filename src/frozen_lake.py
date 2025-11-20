@@ -576,6 +576,20 @@ class raw_env(ParallelEnv):
         if self.render_mode == "human":
             self.render()
 
+        # Check for shared goal attainment
+        all_goal = all(
+            (self.terminateds[a] or self.truncateds[a])
+            or self.game_engine.tile_at(*self.game_engine.agent_positions[a])
+            == Tile.GOAL
+            for a in self.agents
+        )
+        if all_goal:
+            for agent in self.agents:
+                if (self.terminateds[agent] or self.truncateds[agent]):
+                    continue
+                self.rewards[agent] = self.reward_schedule[0]
+                self.terminateds[agent] = True
+
         just_done = {
             agent
             for agent in self.agents
@@ -598,9 +612,17 @@ class raw_env(ParallelEnv):
         for agent in just_done:
             self._was_done_last_step[agent] = True
         rewards = {agent: self.rewards[agent] for agent in obs}
-        dones = {agent: self.terminateds[agent] for agent in obs}
-        truncs = {agent: self.truncateds[agent] for agent in obs}
-        dones["__all__"] = all(self.terminateds.values())
+        dones = {
+            agent: (bool(self.terminateds.get(agent, False)) or bool(self.truncateds.get(agent, False)))
+            for agent in obs
+        }
+
+        truncs = {agent: bool(self.truncateds.get(agent, False)) for agent in obs}
+
+        dones["__all__"] = all(
+            (bool(self.terminateds.get(agent, False)) or bool(self.truncateds.get(agent, False)))
+            for agent in obs
+        )
         return obs, rewards, dones, truncs, {}
 
     def _darken_surface(self, surface, factor=0.5):
