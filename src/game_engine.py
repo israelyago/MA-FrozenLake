@@ -1,6 +1,7 @@
 import sys
 from collections import deque
 from enum import Enum
+from itertools import product
 from typing import Optional
 
 import numpy as np
@@ -102,29 +103,30 @@ class MAFrozenLakeEngine:
         agents = agent_list.copy()
         grid = np.zeros((grid_size, grid_size), dtype=np.int8)
         m = self.generate_random_map(size=grid_size, how_many_agents=len(agents))
-        for y in range(grid_size):
-            for x in range(grid_size):
-                tile = m[y][x]
-                if tile == "H":
-                    grid[x, y] = Tile.HOLE.value
-                elif tile == "G":
-                    grid[x, y] = Tile.GOAL.value
-                elif tile == "F":
-                    grid[x, y] = Tile.EMPTY.value
-                elif tile == "S":
-                    grid[x, y] = Tile.START.value
-                    if len(agents) == 0:
-                        print(
-                            "🚨 BUG: There are more starting positions than agents. "
-                            "This should not happen. "
-                            "Please, open a PR if that occurs"
-                        )
-                        sys.exit(1)
+        for x, y in product(range(grid_size), range(grid_size)):
+            row = y
+            col = x
+            tile = m[row][col]
+            if tile == "H":
+                grid[x, y] = Tile.HOLE.value
+            elif tile == "G":
+                grid[x, y] = Tile.GOAL.value
+            elif tile == "F":
+                grid[x, y] = Tile.EMPTY.value
+            elif tile == "S":
+                grid[x, y] = Tile.START.value
+                if len(agents) == 0:
+                    print(
+                        "🚨 BUG: There are more starting positions than agents. "
+                        "This should not happen. "
+                        "Please, open a PR if that occurs"
+                    )
+                    sys.exit(1)
 
-                    agent = agents.pop()
-                    self.default_positions[agent] = (x, y)
+                agent = agents.pop()
+                self.default_positions[agent] = (x, y)
 
-        self.agent_positions = self.default_positions
+        self.agent_positions = self.default_positions.copy()
         return grid
 
     @staticmethod
