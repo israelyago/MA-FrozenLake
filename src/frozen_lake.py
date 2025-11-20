@@ -1,16 +1,14 @@
+import colorsys
 import functools
 from os import path
-import numpy as np
 
 import gymnasium as gym
-from gymnasium.envs.toy_text.frozen_lake import generate_random_map
-from gymnasium.utils import seeding
-from gymnasium.spaces import Dict, Box, Tuple, Discrete, MultiDiscrete
+import numpy as np
 import pygame
-import colorsys
-
-from pettingzoo import AECEnv
-from pettingzoo.utils import AgentSelector, wrappers
+from gymnasium.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple
+from gymnasium.utils import seeding
+from pettingzoo import ParallelEnv
+from pettingzoo.utils import AgentSelector
 
 from game_engine import MAFrozenLakeEngine, MovementAction, Tile
 
@@ -35,14 +33,9 @@ def env(seed=None, render_mode=None, flatten_observations=False):
     elsewhere in the PettingZoo developer documentation.
     """
     env = raw_env(seed=seed, render_mode=render_mode, flatten_observations=flatten_observations)
-    # this wrapper helps error handling for discrete action spaces
-    env = wrappers.AssertOutOfBoundsWrapper(env)
-    # Provides a wide vareity of helpful user errors
-    # Strongly recommended
-    env = wrappers.OrderEnforcingWrapper(env)
     return env
 
-class raw_env(AECEnv):
+class raw_env(ParallelEnv):
     """
     The metadata holds environment constants. From gymnasium, we inherit the "render_modes",
     metadata which specifies which modes can be put into the render() method.
@@ -57,16 +50,17 @@ class raw_env(AECEnv):
         "is_parallelizable": True,
     }
 
-    def __init__(self,
-                seed=42,
-                render_mode=None,
-                desc: list[str] = None,
-                map_name: str = "4x4",
-                is_slippery: bool = True,
-                success_rate: float = 1.0 / 3.0,
-                reward_schedule: tuple[int, int, int, int] = (1, 0, -1, -0.01),
-                flatten_observations=False,
-        ):
+    def __init__(
+        self,
+        seed=42,
+        render_mode=None,
+        desc: list[str] = None,
+        map_name: str = "4x4",
+        is_slippery: bool = True,
+        success_rate: float = 1.0 / 3.0,
+        reward_schedule: tuple[int, int, int, int] = (1, 1, -1, -0.01),
+        flatten_observations=False,
+    ):
         """
         The init method takes in environment arguments and
          should define the following attributes:
@@ -81,10 +75,10 @@ class raw_env(AECEnv):
         """
         N_AGENTS = 2
         self.N_MESSAGES = 5
-        self.N_ACTIONS = 5
-        self.N_OF_TILES_TYPE = 5
+        self.N_ACTIONS = len(MovementAction)
+        self.N_OF_TILES_TYPE = len(Tile)
         self.GRID_SIZE = 4
-        self.VISION_RANGE = 1 # tiles around agent
+        self.VISION_RANGE = 2 # tiles around agent
         self.OBS_SIZE = 2 * self.VISION_RANGE + 1
         self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
         self.reward_schedule = reward_schedule
@@ -123,21 +117,6 @@ class raw_env(AECEnv):
         
         self.agent_colored_elfs = {}
         self.render_mode = render_mode
-
-        # Generate game state
-        # self.grid = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int8)
-        # m = generate_random_map(size=self.GRID_SIZE, seed=seed)
-        # for y in range(self.GRID_SIZE):
-        #     for x in range(self.GRID_SIZE):
-        #         tile = m[y][x]
-        #         if tile == "H":
-        #             self.grid[x, y] = HOLE
-        #         elif tile == "G":
-        #             self.grid[x, y] = GOAL
-        #         elif tile == "F":
-        #             self.grid[x, y] = EMPTY
-        #         elif tile == "S":
-        #             self.grid[x, y] = START
         
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
 
@@ -446,7 +425,20 @@ class raw_env(AECEnv):
         should return a sane observation (though not necessarily the most up to date possible)
         at any time after reset() is called.
         """
-        return np.array(self.observations[agent])
+        grid = self.game_engine.get_local_view(agent)
+        relative_positions = self.game_engine.get_relative_positions(agent)
+        messages = [self.agent_messages[a] for a in self.possible_agents if a != agent]
+        obs = {
+            "grid": grid,
+            "relative_positions": relative_positions,
+            "messages": messages,
+        }
+        if self.flatten_observations:
+            grid_flat = obs["grid"].flatten()
+            rel_flat = obs["relative_positions"].flatten()
+            msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
+            obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
+        return obs
 
     def close(self):
         """
@@ -499,11 +491,14 @@ class raw_env(AECEnv):
         self.agents = self.possible_agents[:]
         self.rewards = {agent: 0 for agent in self.possible_agents}
         self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
-        self.terminations = {agent: False for agent in self.possible_agents}
-        self.truncations = {agent: False for agent in self.possible_agents}
-        self.infos = {agent: {} for agent in self.possible_agents}
+        self.terminateds = {agent: False for agent in self.possible_agents}
+        self.truncateds = {agent: False for agent in self.possible_agents}
+        self.terminateds['__all__'] = False
+        self.truncateds['__all__'] = False
+        self.infos = {agent: {"dummy": {"yes": 1}} for agent in self.possible_agents}
         self.state = {agent: None for agent in self.possible_agents}
         self.observations = {agent: None for agent in self.possible_agents}
+        self._was_done_last_step = {agent: False for agent in self.agents}
         """
         Our AgentSelector utility allows easy cyclic stepping through the agents list.
         """
@@ -516,23 +511,11 @@ class raw_env(AECEnv):
         self.game_engine.reset()
 
         for agent_id in self.possible_agents:
-            grid = self.game_engine.get_local_view(agent_id)
-            relative_positions = self.game_engine.get_relative_positions(agent_id)
-            messages = [self.agent_messages[a] for a in self.possible_agents if a != agent_id]
-            obs = {
-                "grid": grid,
-                "relative_positions": relative_positions,
-                "messages": messages,
-            }
-            if self.flatten_observations:
-                grid_flat = obs["grid"].flatten()
-                rel_flat = obs["relative_positions"].flatten()
-                msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
-                obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
-            self.observations[agent_id] = obs
+            self.observations[agent_id] = self.observe(agent_id)
 
         if self.render_mode == "human":
             self.render()
+
         return self.observations, self.infos
 
     def step(self, action_bundle):
@@ -550,81 +533,70 @@ class raw_env(AECEnv):
         self.current_step += 1
         if self.current_step >= self.max_steps:
             for a in self.possible_agents:
-                self.truncations[a] = True
+                self.truncateds[a] = True
                 self.rewards[a] = self.reward_schedule[2]
+            self.truncateds["__all__"] = True
 
-        agent_id = self.agent_selection
-        action, message = MovementAction.DO_NOTHING, 0
-        if action_bundle != None:
-            action, message = action_bundle
-            action = MovementAction(action)
+        assert isinstance(action_bundle, dict), (
+            f"Action bundle should be a dict, got ({type(action_bundle)}): {action_bundle}"
+        )
+        for agent_id in action_bundle:
 
-        if (
-            self.terminations[agent_id]
-            or self.truncations[agent_id]
-        ):
-            return
+            if agent_id in self.truncateds and self.truncateds[agent_id]:
+                print(f"🚨 Agent {agent_id} should't be acting")
+                continue
 
-        self.agent_messages[agent_id] = message
+            action, message = action_bundle[agent_id]
+            if isinstance(action, np.int32):
+                action = action.item()
+            if isinstance(message, np.int32):
+                message = message.item()
 
-        # Move agent according to action
-        new_x, new_y = self.game_engine.agent_movement(agent_id, action)
-        reward = 0
-        grid = self.game_engine.get_local_view(agent_id)
-        relative_positions = self.game_engine.get_relative_positions(agent_id)
-        messages = [self.agent_messages[a] for a in self.possible_agents if a != agent_id]
+            new_x, new_y = self.game_engine.agent_movement(agent_id, action)
+            # Handle new tile effects
+            reward = 0
+            tile = self.game_engine.tile_at(new_x, new_y)
+            if tile == Tile.EMPTY or tile == Tile.START:
+                reward = self.reward_schedule[3]
+            elif tile == Tile.GOAL:
+                reward = self.reward_schedule[1]
+            elif tile == Tile.HOLE:
+                self.truncateds[agent_id] = True
+                reward = self.reward_schedule[2]
 
-        # Handle new tile effects
-        tile = self.game_engine.tile_at(new_x, new_y)
-        if tile == Tile.EMPTY or tile == Tile.START:
-            reward = self.reward_schedule[3]
-        elif tile == Tile.GOAL:
-            reward = self.reward_schedule[1]
-        elif tile == Tile.HOLE:
-            self.truncations[agent_id] = True
-            reward = self.reward_schedule[2]
-            grid = np.zeros_like(grid)
-            relative_positions = np.zeros_like(relative_positions)
-
-        self.rewards[agent_id] = reward
-        obs = {
-            "grid": grid,
-            "relative_positions": relative_positions,
-            "messages": messages,
-        }
-        if self.flatten_observations:
-            grid_flat = obs["grid"].flatten()
-            rel_flat = obs["relative_positions"].flatten()
-            msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
-            obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
-        self.observations[agent_id] = obs
-
-        self.agent_last_action[agent_id] = action
-
-        # all_goal = all(self.agent_positions[a] == (goal_x, goal_y) for a in self.possible_agents)
-
-        # if all_goal:
-        #     for agent_id in self.possible_agents:
-        #         self.rewards[agent_id] += self.reward_schedule[0]
-
-        self.agent_selection = self._agent_selector.next()
-        # Check time step limit
-        if (
-            self.terminations[agent_id]
-            or self.truncations[agent_id]
-        ):
-            if self.flatten_observations:
-                self.observations[agent_id] = np.zeros_like(self.observations[agent_id])
-            self.agent_messages[agent_id] = 0
-
-        if all(self.terminations[a] or self.truncations[a] for a in self.possible_agents):
-            # print("All agents done — ending episode.")
-            self.agents = []
-
-        self._accumulate_rewards()
+            self.agent_messages[agent_id] = message
+            self.rewards[agent_id] = reward
+            self.agent_last_action[agent_id] = MovementAction(action)
 
         if self.render_mode == "human":
             self.render()
+
+        just_done = {
+            agent
+            for agent in self.agents
+            if (self.terminateds[agent] or self.truncateds[agent])
+            and not self._was_done_last_step[agent]
+        }
+
+        obs = {}
+
+        for agent in self.agents:
+            if not (self.terminateds[agent] or self.truncateds[agent]):
+                # Normal active agent
+                obs[agent] = self.observe(agent)
+            elif agent in just_done:
+                # One final observation for done agents
+                final_obs = np.zeros_like(self.observe(agent))
+                obs[agent] = final_obs
+
+        # Mark done agents so they won’t receive future obs
+        for agent in just_done:
+            self._was_done_last_step[agent] = True
+        rewards = {agent: self.rewards[agent] for agent in obs}
+        dones = {agent: self.terminateds[agent] for agent in obs}
+        truncs = {agent: self.truncateds[agent] for agent in obs}
+        dones["__all__"] = all(self.terminateds.values())
+        return obs, rewards, dones, truncs, {}
 
     def _darken_surface(self, surface, factor=0.5):
         """

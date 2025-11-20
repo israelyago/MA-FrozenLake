@@ -1,10 +1,7 @@
 import time
 import frozen_lake
-from pettingzoo.utils import aec_to_parallel
 
 env = frozen_lake.env(render_mode="human", seed=42, flatten_observations=True)
-# env = frozen_lake.env(render_mode=None, seed=42, flatten_observations=True)
-env = aec_to_parallel(env)
 
 obs, infos = env.reset()
 

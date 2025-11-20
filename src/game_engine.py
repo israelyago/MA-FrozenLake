@@ -65,6 +65,9 @@ class MAFrozenLakeEngine():
     def grid_size(self) -> int:
         return self.GRID_SIZE
 
+    def set_agent_pos(self, agent_id: str, x: int, y: int):
+        self.agent_positions[agent_id] = (x, y)
+
     @staticmethod
     def gen_grid(seed: int, grid_size: int):
         grid = np.zeros((grid_size, grid_size), dtype=np.int8)
@@ -96,7 +99,7 @@ class MAFrozenLakeEngine():
             0 <= target_x < self.GRID_SIZE and
             0 <= target_y < self.GRID_SIZE
         ):
-            self.agent_positions[agent_id] = (target_x, target_y)
+            self.set_agent_pos(agent_id, target_x, target_y)
         else:
             target_x, target_y = x, y
 
