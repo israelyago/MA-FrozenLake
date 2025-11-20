@@ -88,6 +88,9 @@ class MAFrozenLakeEngine:
     def reset(self):
         self.agent_list = self.possible_agents.copy()
         self.agent_positions = self.default_positions.copy()
+        self._grid = self.gen_grid(
+            grid_size=self.GRID_SIZE, agent_list=self.possible_agents
+        )
 
     def grid_size(self) -> int:
         return self.GRID_SIZE

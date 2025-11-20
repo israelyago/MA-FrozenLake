@@ -66,8 +66,8 @@ class raw_env(ParallelEnv):
         render_mode=None,
         desc: list[str] = None,
         map_name: str = "4x4",
-        success_rate: Optional[float] = 1.0 / 3.0,
-        reward_schedule: tuple[int, int, int, int] = (1, 1, -1, -0.01),
+        success_rate: Optional[float] = 95.0 / 100.0,
+        reward_schedule: tuple[int, int, int, int, int] = (10, 1, -1, -0.001, -0.1),
         flatten_observations=False,
     ):
         """
@@ -82,11 +82,11 @@ class raw_env(ParallelEnv):
 
         These attributes should not be changed after initialization.
         """
-        N_AGENTS = 2
+        N_AGENTS = 4
         self.N_MESSAGES = 5
         self.N_ACTIONS = len(MovementAction)
         self.N_OF_TILES_TYPE = len(Tile)
-        self.GRID_SIZE = 4
+        self.GRID_SIZE = 7
         self.VISION_RANGE = 2 # tiles around agent
         self.OBS_SIZE = 2 * self.VISION_RANGE + 1
         self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
@@ -536,12 +536,6 @@ class raw_env(ParallelEnv):
         - agent_selection (to the next agent)
         And any internal state used by observe() or render()
         """
-        self.current_step += 1
-        if self.current_step >= self.max_steps:
-            for a in self.possible_agents:
-                self.truncateds[a] = True
-                self.rewards[a] = self.reward_schedule[2]
-            self.truncateds["__all__"] = True
 
         assert isinstance(action_bundle, dict), (
             f"Action bundle should be a dict, got ({type(action_bundle)}): {action_bundle}"
@@ -589,6 +583,15 @@ class raw_env(ParallelEnv):
                     continue
                 self.rewards[agent] = self.reward_schedule[0]
                 self.terminateds[agent] = True
+
+        self.current_step += 1
+        if self.current_step >= self.max_steps:
+            for agent in self.agents:
+                if self.terminateds[agent] or self.truncateds[agent]:
+                    continue
+                self.truncateds[agent] = True
+                self.rewards[agent] = self.reward_schedule[4]
+            self.truncateds["__all__"] = True
 
         just_done = {
             agent

@@ -62,9 +62,14 @@ def main():
         .environment("ma_frozen_lake_v0")
         .framework("torch")
         .training(
-            lr=0.0001,
+            lr=0.00001,
             train_batch_size_per_learner=128,
             num_epochs=2,
+            model={
+                "use_lstm": True,
+                "lstm_cell_size": 64,  # size of hidden state
+                "max_seq_len": 32,  # how long sequences are for BPTT
+            },
         )
         .multi_agent(
             policies={"shared_policy"},
@@ -88,7 +93,7 @@ def main():
     print("⚛︎ Total trainable parameters:", total_params)
 
     print("🤖 Will train a model with PPO")
-    max_iterations = 100
+    max_iterations = 300
 
     for i in range(1, max_iterations + 1):
         result = algo.train()
