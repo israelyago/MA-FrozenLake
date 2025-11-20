@@ -25,7 +25,11 @@ def main():
     seed = 42
 
     def env_creator(config=None):
-        env = frozen_lake.env(seed=seed, flatten_observations=True, render_mode="human")
+        env = frozen_lake.env(
+            seed=seed, 
+            flatten_observations=True, 
+            render_mode="human",
+            success_rate=1/3)
         env = SafePettingZooEnv(env)
         env.reset(seed=seed)
         return env

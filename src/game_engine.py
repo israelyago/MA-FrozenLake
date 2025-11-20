@@ -1,6 +1,8 @@
 from enum import Enum
+from typing import Optional
 import numpy as np
 from gymnasium.envs.toy_text.frozen_lake import generate_random_map
+import random
 
 class MovementAction(Enum):
     LEFT = 0
@@ -13,11 +15,13 @@ class MovementAction(Enum):
         return self.name
 
     @staticmethod
-    def delta(movement):
+    def delta(movement, success_rate: Optional[float], rng: np.random.Generator):
+        # Normalize movement
         if isinstance(movement, np.int64):
             movement = MovementAction(movement.item())
         if isinstance(movement, int):
             movement = MovementAction(movement)
+
         deltas = {
             MovementAction.LEFT: (-1, 0),
             MovementAction.DOWN: (0, 1),
@@ -25,7 +29,23 @@ class MovementAction(Enum):
             MovementAction.UP: (0, -1),
             MovementAction.DO_NOTHING: (0, 0),
         }
-        return deltas[movement]
+
+        if success_rate is None or movement == MovementAction.DO_NOTHING:
+            return deltas[movement]
+
+        if rng.random() < success_rate:
+            return deltas[movement]
+
+        # Orthogonal slips
+        ortho = {
+            MovementAction.LEFT: [MovementAction.UP, MovementAction.DOWN],
+            MovementAction.RIGHT: [MovementAction.UP, MovementAction.DOWN],
+            MovementAction.UP: [MovementAction.LEFT, MovementAction.RIGHT],
+            MovementAction.DOWN: [MovementAction.LEFT, MovementAction.RIGHT],
+        }
+
+        slipped = rng.choice(ortho[movement])
+        return deltas[slipped]
 
 class Tile(Enum):
     OUT_OF_MAP = 0
@@ -39,14 +59,17 @@ class Tile(Enum):
 #         self._pos = (x, y)
 
 class MAFrozenLakeEngine():
-    def __init__(self,
-                 seed: int,
-                 agent_list: list[str],
-                 grid_size: int,
-                 agent_positions: dict[str, tuple[int, int]],
-                 vision_range: int,
-                 ):
+    def __init__(
+        self,
+        seed: int,
+        agent_list: list[str],
+        grid_size: int,
+        agent_positions: dict[str, tuple[int, int]],
+        vision_range: int,
+        success_rate: Optional[float],
+    ):
         self.seed = seed
+        self.rng = np.random.default_rng(seed)
         self.possible_agents = agent_list
         self.agent_list = agent_list
         self.GRID_SIZE = grid_size
@@ -57,6 +80,7 @@ class MAFrozenLakeEngine():
             seed = seed, 
             grid_size = self.GRID_SIZE,
         )
+        self.success_rate = success_rate
 
     def reset(self):
         self.agent_list = self.possible_agents
@@ -91,7 +115,7 @@ class MAFrozenLakeEngine():
             Returns the agent new position.
         """
         x, y = self.agent_positions[agent_id]
-        dx, dy = MovementAction.delta(movement)
+        dx, dy = MovementAction.delta(movement, self.success_rate, self.rng)
         target_x, target_y = x + dx, y + dy
 
         # Check boundaries

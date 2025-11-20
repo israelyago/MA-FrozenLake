@@ -1,6 +1,7 @@
 import colorsys
 import functools
 from os import path
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -26,13 +27,23 @@ MAPS = {
     ],
 }
 
-def env(seed=None, render_mode=None, flatten_observations=False):
+def env(
+    seed=None,
+    render_mode=None,
+    flatten_observations=False,
+    success_rate: Optional[float] = 1.0 / 3.0,
+):
     """
     The env function often wraps the environment in wrappers by default.
     You can find full documentation for these methods
     elsewhere in the PettingZoo developer documentation.
     """
-    env = raw_env(seed=seed, render_mode=render_mode, flatten_observations=flatten_observations)
+    env = raw_env(
+        seed=seed,
+        render_mode=render_mode,
+        flatten_observations=flatten_observations,
+        success_rate=success_rate,
+    )
     return env
 
 class raw_env(ParallelEnv):
@@ -56,8 +67,7 @@ class raw_env(ParallelEnv):
         render_mode=None,
         desc: list[str] = None,
         map_name: str = "4x4",
-        is_slippery: bool = True,
-        success_rate: float = 1.0 / 3.0,
+        success_rate: Optional[float] = 1.0 / 3.0,
         reward_schedule: tuple[int, int, int, int] = (1, 1, -1, -0.01),
         flatten_observations=False,
     ):
@@ -132,6 +142,7 @@ class raw_env(ParallelEnv):
             grid_size = self.GRID_SIZE,
             agent_positions = agent_positions,
             vision_range = self.VISION_RANGE,
+            success_rate = success_rate,
         )
 
         nrow, ncol = self.GRID_SIZE, self.GRID_SIZE
