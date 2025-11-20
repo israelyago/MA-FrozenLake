@@ -4,6 +4,7 @@ import frozen_lake
 env = frozen_lake.env(render_mode="human", seed=42, flatten_observations=True)
 
 obs, infos = env.reset()
+env.render()
 
 N = 0
 start = time.time()
@@ -16,6 +17,7 @@ for _ in range(100):
     # Example: break when all agents done
     if all(terminations.values()) or all(truncations.values()):
         break
+    time.sleep(1)
 
 env.close()
 end = time.time()

@@ -9,7 +9,6 @@ import pygame
 from gymnasium.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple
 from gymnasium.utils import seeding
 from pettingzoo import ParallelEnv
-from pettingzoo.utils import AgentSelector
 
 from game_engine import MAFrozenLakeEngine, MovementAction, Tile
 
@@ -96,6 +95,7 @@ class raw_env(ParallelEnv):
         self.max_steps = 50
         self.current_step = 0
 
+        self.agents = self.possible_agents[:]
         self.agent_name_mapping = dict(
             zip(self.possible_agents, list(range(len(self.possible_agents))))
         )
@@ -132,15 +132,10 @@ class raw_env(ParallelEnv):
 
         self.reward_range = (min(reward_schedule), max(reward_schedule))
 
-        agent_positions = {
-            agent: (0, 0)
-            for agent in self.possible_agents
-        }
         self.game_engine = MAFrozenLakeEngine(
             seed = seed,
             agent_list = self.possible_agents,
             grid_size = self.GRID_SIZE,
-            agent_positions = agent_positions,
             vision_range = self.VISION_RANGE,
             success_rate = success_rate,
         )
@@ -513,8 +508,8 @@ class raw_env(ParallelEnv):
         """
         Our AgentSelector utility allows easy cyclic stepping through the agents list.
         """
-        self._agent_selector = AgentSelector(self.agents)
-        self.agent_selection = self._agent_selector.next()
+        # self._agent_selector = AgentSelector(self.agents)
+        # self.agent_selection = self._agent_selector.next()
 
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
         self.agent_last_action = {agent: None for agent in self.possible_agents}
@@ -554,7 +549,6 @@ class raw_env(ParallelEnv):
         for agent_id in action_bundle:
 
             if agent_id in self.truncateds and self.truncateds[agent_id]:
-                print(f"🚨 Agent {agent_id} should't be acting")
                 continue
 
             action, message = action_bundle[agent_id]
