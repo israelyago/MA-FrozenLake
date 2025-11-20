@@ -15,6 +15,7 @@ dependencies = [
     "ray[tune]>=2.51.1",
     "scipy>=1.16.3",
     "torch>=2.9.0",
+    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]
