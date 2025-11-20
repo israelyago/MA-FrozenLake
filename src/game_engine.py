@@ -86,8 +86,8 @@ class MAFrozenLakeEngine:
         self.success_rate = success_rate
 
     def reset(self):
-        self.agent_list = self.possible_agents
-        self.agent_positions = self.default_positions
+        self.agent_list = self.possible_agents.copy()
+        self.agent_positions = self.default_positions.copy()
 
     def grid_size(self) -> int:
         return self.GRID_SIZE

@@ -26,10 +26,11 @@ def main():
 
     def env_creator(config=None):
         env = frozen_lake.env(
-            seed=seed, 
-            flatten_observations=True, 
+            seed=seed,
+            flatten_observations=True,
             render_mode="human",
-            success_rate=1/3)
+            success_rate=1 / 3,
+        )
         env = SafePettingZooEnv(env)
         env.reset(seed=seed)
         return env
@@ -76,8 +77,11 @@ def main():
                 actions[agent] = action
 
             obs, rewards, terminations, truncations, infos = env.step(actions)
-
-            done = all(terminations.values()) or all(truncations.values())
+            dones = {
+                agent: truncations.get(agent, False) or terminations.get(agent, False)
+                for agent in set(truncations) | set(terminations)
+            }
+            done = all(dones.values())
 
     env.close()
 
