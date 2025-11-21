@@ -39,7 +39,7 @@ def train(config: TrainConfig) -> pd.DataFrame:
 
     register_env("ma_frozen_lake_v0", env_creator)
 
-    iterations = 10000
+    iterations = 1000
     max_iterations = 2 if config.smoke else iterations
 
     algo_config = (

@@ -192,6 +192,19 @@ def plot():
 
     print(f"📊 Saved comparison plot to '{output_path}'")
 
+@ray.remote
+def run_experiment(config: TrainConfig, args):
+    # Inherit smoke flag
+    config.smoke = config.smoke or args.smoke
+
+    # Path: artifacts/<experiment>/runs/run_X/config.yaml
+    config_path = config.run_dir / "config.yaml"
+
+    # Save run config YAML
+    save_config_yaml(config, config_path)
+    df = train(config)
+    return df
+
 def main():
     args = get_args()
 
@@ -208,21 +221,11 @@ def main():
         # Create N run-configs for this base config
         run_configs = get_all_runs_from_config(base_config, args.runs)
 
-        dfs = []
+        # --- PARALLEL LAUNCH ----
+        futures = [run_experiment.remote(cfg, args) for cfg in run_configs]
 
-        for config in tqdm(run_configs, desc="Run", leave=False):
-            # Inherit smoke flag
-            config.smoke = config.smoke or args.smoke
-
-            # Path: artifacts/<experiment>/runs/run_X/config.yaml
-            config_path = config.run_dir / "config.yaml"
-
-            # Save run config YAML
-            save_config_yaml(config, config_path)
-
-            # Execute the run
-            df = train(config)
-            dfs.append(df)
+        # --- WAIT & COLLECT ----
+        dfs = ray.get(futures)
 
         aggregated = aggregate_metrics(dfs)
         aggregated_path = base_config.experiment_dir / "metrics.csv"
