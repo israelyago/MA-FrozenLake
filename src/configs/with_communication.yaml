@@ -1,0 +1,5 @@
+experiment: with_communication
+smoke: false
+full_observability: true
+with_communication: true
+slippery: false

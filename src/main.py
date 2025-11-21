@@ -1,21 +1,12 @@
 import argparse
 import os
+from copy import deepcopy
 from pathlib import Path
+from typing import List
 
-from ray.rllib.algorithms.ppo import PPOConfig
-from ray.rllib.env import ParallelPettingZooEnv
-from ray.tune.registry import register_env
-from tqdm import tqdm
+import yaml
 
-import frozen_lake
-
-class TrainConfig:
-    full_observability = True
-    with_communication = False
-    slippery = False
-    reward_schedule = [10, 1, -1, -0.001, -0.1]
-    artifacts: Path
-    experiment_dir: Path
+from trainer import TrainConfig, train
 
 
 def get_args():
@@ -25,53 +16,10 @@ def get_args():
     )
 
     parser.add_argument(
-        "--artifacts",
-        type=Path,
-        default=Path("artifacts"),
-        help="Where experiments artifacts are stored",
-    )
-
-    parser.add_argument(
-        "--experiment",
-        type=str,
-        default="smoke",
-        help="Experiment name",
-    )
-
-    parser.add_argument(
-        "--full_observability",
-        type=bool,
-        default=False,
-        help="Should the agents see the whole map?",
-    )
-
-    parser.add_argument(
-        "--with_communication",
-        type=bool,
-        default=True,
-        help="Can the agents communicate?",
-    )
-
-    parser.add_argument(
-        "--reward_schedule",
-        type=float,
-        nargs="+",
-        default=[10, 1, -1, -0.001, -0.1],
-        help="Rewards schedule: (All at goal, Agent at goal, Falling at Hole, Timeout, Step)",
-    )
-
-    parser.add_argument(
-        "--slippery",
-        type=bool,
-        default=True,
-        help="Do the agents slip when walking?",
-    )
-
-    parser.add_argument(
-        "--seed",
+        "--runs",
         type=int,
-        default=42,
-        help="Seed for random operations",
+        default=5,
+        help="How many runs per experiment configuration",
     )
 
     parser.add_argument(
@@ -84,21 +32,57 @@ def get_args():
     return args
 
 
-def parse_config() -> TrainConfig:
-    config = get_args()
+def get_args_from_file(config: Path):
+    """
+    Load experiment configuration from a YAML file.
+    Returns an argparse.Namespace for drop-in compatibility.
+    """
+    with open(config, "r") as f:
+        data = yaml.safe_load(f) or {}
+
+    defaults = {
+        "artifacts": Path("./artifacts"),
+        "experiment": "smoke",
+        "full_observability": False,
+        "with_communication": True,
+        "reward_schedule": [10, 1, -1, -0.001, -0.1],
+        "slippery": True,
+        "seed": 42,
+        "smoke": False,
+    }
+
+    # Merge YAML with defaults
+    cfg = {**defaults, **data}
+
+    # Type corrections (YAML may not preserve types fully)
+    cfg["artifacts"] = Path(cfg["artifacts"])
+    cfg["reward_schedule"] = list(map(float, cfg["reward_schedule"]))
+    cfg["seed"] = int(cfg["seed"])
+    cfg["slippery"] = bool(cfg["slippery"])
+    cfg["with_communication"] = bool(cfg["with_communication"])
+    cfg["full_observability"] = bool(cfg["full_observability"])
+    cfg["smoke"] = bool(cfg["smoke"])
+
+    return argparse.Namespace(**cfg)
+
+
+def parse_base_config(config_path: Path) -> TrainConfig:
+    config = get_args_from_file(config_path)
 
     # Parse configuration
     if len(config.reward_schedule) != 5:
         print(
             f"🚨 Argument reward_schedule must have 5 elements, got {len(config.reward_schedule)}"
         )
-    config.artifacts = config.artifacts.absolute()
+    config.artifacts = config.artifacts
     if not config.artifacts.is_dir():
-        print(f"🚨 --artifacts should be a dir, check {(config.artifacts.absolute())}")
+        print(f"🚨 --artifacts should be a dir, check {(config.artifacts)}")
 
     config.experiment_dir = config.artifacts / config.experiment
+    config.runs_dir = config.experiment_dir / "runs"
     os.makedirs(config.artifacts, exist_ok=True)
     os.makedirs(config.experiment_dir, exist_ok=True)
+    os.makedirs(config.runs_dir, exist_ok=True)
 
     if config.smoke:
         print("🚬🗿 Smoke testing")
@@ -108,68 +92,64 @@ def parse_config() -> TrainConfig:
     return config
 
 
-def train(config: TrainConfig):
-    def env_creator(c):
-        env = frozen_lake.env(
-            render_mode=None, seed=config.seed, flatten_observations=True
-        )
-        env = ParallelPettingZooEnv(env)
-        env.reset(seed=config.seed)
-        return env
+def get_all_runs_from_config(base_config: TrainConfig, runs: int) -> List[TrainConfig]:
+    configs = []
+    for run in range(runs):
+        config = deepcopy(base_config)
+        config.run = run
+        config.run_dir = config.runs_dir / f"run_{run}"  # <--- use f-string with run
+        config.run_metrics_file = config.run_dir / "metrics.csv"
+        config.seed = base_config.seed + run
+        configs.append(config)
+    return configs
 
-    register_env("ma_frozen_lake_v0", env_creator)
 
-    algo_config = (
-        PPOConfig()
-        .env_runners(
-            # rollout_fragment_length=32,
-            sample_timeout_s=10,
-            rollout_fragment_length="auto",
-            batch_mode="truncate_episodes",
-        )
-        .environment("ma_frozen_lake_v0")
-        .framework("torch")
-        .training(
-            lr=0.0001,
-            train_batch_size_per_learner=128,
-            num_epochs=2,
-            model={
-                "use_lstm": True,
-                "lstm_cell_size": 64,
-                "max_seq_len": 32,
-            },
-        )
-        .multi_agent(
-            policies={"shared_policy"},
-            policy_mapping_fn=lambda aid, *args, **kwargs: "shared_policy",
-        )
-    )
+def save_config_yaml(config, filepath: Path):
+    filepath.parent.mkdir(parents=True, exist_ok=True)
 
-    algo = algo_config.build_algo()
-    module = algo.get_module("shared_policy")
+    # Convert config (Namespace or dataclass) → dict
+    if hasattr(config, "__dict__"):
+        data = {k: v for k, v in config.__dict__.items()}
+    else:
+        raise TypeError("Unsupported config type for saving.")
 
-    total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    print("⚛︎ Total trainable parameters:", total_params)
+    # Convert Path objects to strings (YAML cannot serialize Path directly)
+    for k, v in data.items():
+        if isinstance(v, Path):
+            data[k] = str(v)
 
-    print("🤖 Will train a model with PPO")
-    max_iterations = 5 if config.smoke else 300
-
-    for i in tqdm(range(1, max_iterations + 1), desc="Train iter."):
-        algo.train()
-        # result = algo.train()
-
-        # mean_reward = result["env_runners"]["episode_return_mean"]
-        # print(f"🧪 Iteration {i}: mean_reward={mean_reward}")
-    
-    checkpoints_dir = config.experiment_dir / "checkpoints"
-    print(f"💾 Saving model to checkpoints to '{checkpoints_dir}'")
-    algo.save(checkpoints_dir)
-    print("✅ Done")
+    with open(filepath, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
 
 
 def main():
-    config = parse_config()
-    train(config)
+    args = get_args()
+
+    # Loop over ALL config files in src/configs/*.yaml
+    config_files = sorted(Path("src/configs").glob("*.yaml"))
+    print(f"💡 Found {len(config_files)} config files:", config_files)
+
+    for cfg_file in config_files:
+        print(f"🔧 Using base config: {cfg_file}")
+
+        # Load base config from file
+        base_config = parse_base_config(cfg_file)
+
+        # Create N run-configs for this base config
+        run_configs = get_all_runs_from_config(base_config, args.runs)
+
+        for config in run_configs:
+            # Inherit smoke flag
+            config.smoke = config.smoke or args.smoke
+
+            # Path: artifacts/<experiment>/runs/run_X/config.yaml
+            config_path = config.run_dir / "config.yaml"
+
+            # Save run config YAML
+            save_config_yaml(config, config_path)
+
+            # Execute the run
+            train(config)
 
 
 if __name__ == "__main__":
