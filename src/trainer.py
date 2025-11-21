@@ -39,6 +39,9 @@ def train(config: TrainConfig) -> pd.DataFrame:
 
     register_env("ma_frozen_lake_v0", env_creator)
 
+    iterations = 10000
+    max_iterations = 2 if config.smoke else iterations
+
     algo_config = (
         PPOConfig()
         .env_runners(
@@ -71,7 +74,6 @@ def train(config: TrainConfig) -> pd.DataFrame:
 
     algo = algo_config.build_algo()
 
-    max_iterations = 3 if config.smoke else 10000
     rows = []
     for i in tqdm(range(1, max_iterations + 1), desc="Train iter."):
         result = algo.train()
