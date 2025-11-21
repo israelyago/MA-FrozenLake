@@ -1,12 +1,12 @@
 from pathlib import Path
-import frozen_lake
-
 
 import pandas as pd
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.env import ParallelPettingZooEnv
 from ray.tune.registry import register_env
 from tqdm import tqdm
+
+import frozen_lake
 
 
 class TrainConfig:

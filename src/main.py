@@ -3,12 +3,22 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import List
-import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
 import pandas as pd
+import ray
 import yaml
+from tqdm import tqdm
 
 from trainer import TrainConfig, train
+
+ray.init(
+    runtime_env={
+        "env_vars": {
+            "PYTHONWARNINGS": "ignore::DeprecationWarning"
+        },
+    },
+)
 
 plt.rcParams.update(
     {
@@ -187,9 +197,9 @@ def main():
 
     # Loop over ALL config files in src/configs/*.yaml
     config_files = sorted(Path("src/configs").glob("*.yaml"))
-    print(f"💡 Found {len(config_files)} config files:", config_files)
+    print(f"💡 Found {len(config_files)} experiments config files")
 
-    for cfg_file in config_files:
+    for cfg_file in tqdm(config_files, desc="Experiment"):
         print(f"🔧 Using base config: {cfg_file}")
 
         # Load base config from file
@@ -200,7 +210,7 @@ def main():
 
         dfs = []
 
-        for config in run_configs:
+        for config in tqdm(run_configs, desc="Run", leave=False):
             # Inherit smoke flag
             config.smoke = config.smoke or args.smoke
 
@@ -211,7 +221,7 @@ def main():
             save_config_yaml(config, config_path)
 
             # Execute the run
-            df = train(config)  # df = pd.DataFrame(rows, columns=["iteration", "mean_reward"])
+            df = train(config)
             dfs.append(df)
 
         aggregated = aggregate_metrics(dfs)
