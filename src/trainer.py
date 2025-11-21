@@ -23,8 +23,14 @@ class TrainConfig:
 
 def train(config: TrainConfig) -> pd.DataFrame:
     def env_creator(c):
+        success_rate = 1.0/3.0 if config.slippery else None
         env = frozen_lake.env(
-            render_mode=None, seed=config.seed, flatten_observations=True
+            render_mode=None,
+            seed=config.seed,
+            flatten_observations=True,
+            full_observability=config.full_observability,
+            with_communication=config.with_communication,
+            success_rate=success_rate,
         )
         env = ParallelPettingZooEnv(env)
         env.reset(seed=config.seed)

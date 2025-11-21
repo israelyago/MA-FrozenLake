@@ -288,6 +288,10 @@ class MAFrozenLakeEngine:
 
         return (target_x, target_y)
 
+    def get_grid_one_hot(self):
+        one_hot_grid = np.eye(len(Tile))[self._grid]
+        return one_hot_grid
+
     def get_local_view(self, agent_id):
         x, y = self.agent_positions[agent_id]
         # pad the grid to handle edge cases
