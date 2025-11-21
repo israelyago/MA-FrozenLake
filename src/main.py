@@ -2,11 +2,25 @@ import argparse
 import os
 from copy import deepcopy
 from pathlib import Path
+import sys
 from typing import List
+import matplotlib.pyplot as plt
 
+import pandas as pd
 import yaml
 
 from trainer import TrainConfig, train
+
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Computer Modern"],
+        "text.usetex": False,
+        "axes.linewidth": 0.8,
+        "lines.linewidth": 1.2,
+        "lines.markersize": 4,
+    }
+)
 
 
 def get_args():
@@ -121,6 +135,53 @@ def save_config_yaml(config, filepath: Path):
     with open(filepath, "w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
 
+def aggregate_metrics(dfs: List[pd.DataFrame]) -> pd.DataFrame:
+    all_df = pd.concat(dfs, keys=range(len(dfs)), names=["run"])
+    return (
+        all_df.groupby("iteration")
+        .agg(mean_reward=("mean_reward", "mean"), std_reward=("mean_reward", "std"))
+        .reset_index()
+    )
+
+def plot():
+    print("\n📈 Generating comparison plot...")
+
+    artifacts_dir = Path("artifacts")
+    experiment_dirs = [d for d in artifacts_dir.iterdir() if d.is_dir()]
+
+    plt.figure(figsize=(10, 6))
+
+    for exp_dir in experiment_dirs:
+        metrics_file = exp_dir / "metrics.csv"
+        if not metrics_file.exists():
+            print(f"⚠️ No aggregated metrics found for {exp_dir.name}, skipping.")
+            continue
+
+        df = pd.read_csv(metrics_file)
+
+        label = exp_dir.name.replace("_", " ")
+
+        # Mean curve
+        plt.plot(df["iteration"], df["mean_reward"], label=label)
+
+        # 95% confidence band: mean ± 1.96 * std
+        if "std_reward" in df.columns:
+            upper = df["mean_reward"] + 1.96 * df["std_reward"]
+            lower = df["mean_reward"] - 1.96 * df["std_reward"]
+
+            plt.fill_between(df["iteration"], lower, upper, alpha=0.2)
+
+    plt.title("Comparison of Experiments (Mean Reward ± 95% CI)")
+    plt.xlabel("Iteration")
+    plt.ylabel("Mean Reward")
+    plt.legend()
+    plt.grid(alpha=0.3, linestyle="--")
+
+    output_path = artifacts_dir / "comparison_plot.png"
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+
+    print(f"📊 Saved comparison plot to '{output_path}'")
 
 def main():
     args = get_args()
@@ -138,6 +199,8 @@ def main():
         # Create N run-configs for this base config
         run_configs = get_all_runs_from_config(base_config, args.runs)
 
+        dfs = []
+
         for config in run_configs:
             # Inherit smoke flag
             config.smoke = config.smoke or args.smoke
@@ -149,8 +212,14 @@ def main():
             save_config_yaml(config, config_path)
 
             # Execute the run
-            train(config)
+            df = train(config)  # df = pd.DataFrame(rows, columns=["iteration", "mean_reward"])
+            dfs.append(df)
 
+        aggregated = aggregate_metrics(dfs)
+        aggregated_path = base_config.experiment_dir / "metrics.csv"
+        aggregated.to_csv(aggregated_path, index=False)
+
+    plot()
 
 if __name__ == "__main__":
     main()

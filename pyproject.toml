@@ -8,6 +8,7 @@ dependencies = [
     "dm-tree>=0.1.9",
     "gymnasium>=1.2.2",
     "lz4>=4.4.5",
+    "matplotlib>=3.10.7",
     "numpy>=2.3.4",
     "pettingzoo>=1.25.0",
     "pydantic>=2.12.4",

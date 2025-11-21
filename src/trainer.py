@@ -21,7 +21,7 @@ class TrainConfig:
     run_dir: Path
 
 
-def train(config: TrainConfig):
+def train(config: TrainConfig) -> pd.DataFrame:
     def env_creator(c):
         env = frozen_lake.env(
             render_mode=None, seed=config.seed, flatten_observations=True
@@ -72,3 +72,4 @@ def train(config: TrainConfig):
 
     checkpoints_dir = config.run_dir / "checkpoints"
     algo.save(checkpoints_dir.absolute())
+    return df
