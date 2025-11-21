@@ -2,7 +2,6 @@ import argparse
 import os
 from copy import deepcopy
 from pathlib import Path
-import sys
 from typing import List
 import matplotlib.pyplot as plt
 
@@ -13,8 +12,8 @@ from trainer import TrainConfig, train
 
 plt.rcParams.update(
     {
-        "font.family": "serif",
-        "font.serif": ["Computer Modern"],
+        "font.family": "STIXGeneral",
+        "mathtext.fontset": "stix",
         "text.usetex": False,
         "axes.linewidth": 0.8,
         "lines.linewidth": 1.2,
