@@ -13,6 +13,7 @@ class TrainConfig:
     full_observability = True
     with_communication = False
     slippery = False
+    with_lstm = True
     reward_schedule = [10, 1, -1, -0.001, -0.1]
     artifacts: Path
     experiment_dir: Path
@@ -41,7 +42,6 @@ def train(config: TrainConfig) -> pd.DataFrame:
     algo_config = (
         PPOConfig()
         .env_runners(
-            # rollout_fragment_length=32,
             sample_timeout_s=10,
             rollout_fragment_length="auto",
             batch_mode="truncate_episodes",
@@ -49,13 +49,18 @@ def train(config: TrainConfig) -> pd.DataFrame:
         .environment("ma_frozen_lake_v0")
         .framework("torch")
         .training(
-            lr=0.0001,
-            train_batch_size_per_learner=128,
+            lr=0.00001,
+            train_batch_size_per_learner=512,
             num_epochs=2,
             model={
+                "fcnet_hiddens": [64, 64],
                 "use_lstm": True,
                 "lstm_cell_size": 64,
                 "max_seq_len": 32,
+            }
+            if config.with_lstm
+            else {
+                "fcnet_hiddens": [64, 64],
             },
         )
         .multi_agent(
@@ -66,7 +71,7 @@ def train(config: TrainConfig) -> pd.DataFrame:
 
     algo = algo_config.build_algo()
 
-    max_iterations = 5 if config.smoke else 300
+    max_iterations = 3 if config.smoke else 10000
     rows = []
     for i in tqdm(range(1, max_iterations + 1), desc="Train iter."):
         result = algo.train()

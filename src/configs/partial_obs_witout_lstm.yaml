@@ -1,6 +1,6 @@
-experiment: partial_observability
+experiment: partial_observability_wo_lstm
 smoke: false
 full_observability: false
-with_lstm: true
+with_lstm: false
 with_communication: false
 slippery: false
