@@ -1,110 +1,234 @@
+import argparse
 import os
+from copy import deepcopy
+from pathlib import Path
+from typing import List
 
-from ray.rllib.algorithms.ppo import PPOConfig
-from ray.rllib.env import ParallelPettingZooEnv
-from ray.tune.registry import register_env
+import matplotlib.pyplot as plt
+import pandas as pd
+import ray
+import yaml
+from tqdm import tqdm
 
-import frozen_lake
-from game_engine import MovementAction
+from trainer import TrainConfig, train
 
-# All go to goal
-TRAJECTORY = [
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.DOWN,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.DO_NOTHING,
-    MovementAction.LEFT,
-    MovementAction.DO_NOTHING,
-    MovementAction.DO_NOTHING,
-    MovementAction.DO_NOTHING,
-    MovementAction.DO_NOTHING,
-    MovementAction.RIGHT,
-    MovementAction.RIGHT,
-    MovementAction.DO_NOTHING,
-    MovementAction.DO_NOTHING,
-]
+ray.init(
+    runtime_env={
+        "env_vars": {
+            "PYTHONWARNINGS": "ignore::DeprecationWarning"
+        },
+    },
+)
+
+plt.rcParams.update(
+    {
+        "font.family": "STIXGeneral",
+        "mathtext.fontset": "stix",
+        "text.usetex": False,
+        "axes.linewidth": 0.8,
+        "lines.linewidth": 1.2,
+        "lines.markersize": 4,
+    }
+)
 
 
-def main():
-    seed = 42
-
-    # RLlib environment creator
-    def env_creator(config=None):
-        env = frozen_lake.env(render_mode=None, seed=seed, flatten_observations=True)
-        env = ParallelPettingZooEnv(env)
-        env.reset(seed=seed)
-        return env
-
-    register_env("ma_frozen_lake_v0", env_creator)
-
-    config = (
-        PPOConfig()
-        .env_runners(
-            # rollout_fragment_length=32,
-            sample_timeout_s=10,
-            rollout_fragment_length="auto",
-            batch_mode="truncate_episodes",
-        )
-        .environment("ma_frozen_lake_v0")
-        .framework("torch")
-        .training(
-            lr=0.00001,
-            train_batch_size_per_learner=128,
-            num_epochs=2,
-            model={
-                "use_lstm": True,
-                "lstm_cell_size": 64,  # size of hidden state
-                "max_seq_len": 32,  # how long sequences are for BPTT
-            },
-        )
-        .multi_agent(
-            policies={"shared_policy"},
-            policy_mapping_fn=lambda aid, *args, **kwargs: "shared_policy",
-        )
-        # .debugging(log_level="DEBUG")
-        # .rl_module(
-        #     rl_module_spec=DefaultPPOTorchRLModule(
-        #         observation_space=env.observation_space,
-        #         action_space=env.action_space,
-        #         model_config=DefaultModelConfig(fcnet_hiddens=[64, 64]),
-        #         catalog_class=PPOCatalog,
-        #     )
-        # )
+def get_args():
+    parser = argparse.ArgumentParser(
+        description="Experiment configuration for Multi-Agent Frozen Lake",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    algo = config.build_algo()
-    module = algo.get_module("shared_policy")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=5,
+        help="How many runs per experiment configuration",
+    )
 
-    total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    print("⚛︎ Total trainable parameters:", total_params)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run smoke test",
+    )
 
-    print("🤖 Will train a model with PPO")
-    max_iterations = 300
+    args = parser.parse_args()
+    return args
 
-    for i in range(1, max_iterations + 1):
-        result = algo.train()
-        
-        mean_reward = result["env_runners"]["episode_return_mean"]
-        print(f"🧪 Iteration {i}: mean_reward={mean_reward}")
-    print("💾 Saving model to ma_frozen_lake_ppo")
-    save_path = os.path.abspath("./checkpoints/ma_frozen_lake_ppo")
-    algo.save(save_path)
-    print("✅ Done")
 
+def get_args_from_file(config: Path):
+    """
+    Load experiment configuration from a YAML file.
+    Returns an argparse.Namespace for drop-in compatibility.
+    """
+    with open(config, "r") as f:
+        data = yaml.safe_load(f) or {}
+
+    defaults = {
+        "artifacts": Path("./artifacts"),
+        "experiment": "smoke",
+        "full_observability": False,
+        "with_communication": True,
+        "reward_schedule": [10, 1, -1, -0.001, -0.1],
+        "slippery": True,
+        "seed": 42,
+        "smoke": False,
+    }
+
+    # Merge YAML with defaults
+    cfg = {**defaults, **data}
+
+    # Type corrections (YAML may not preserve types fully)
+    cfg["artifacts"] = Path(cfg["artifacts"])
+    cfg["reward_schedule"] = list(map(float, cfg["reward_schedule"]))
+    cfg["seed"] = int(cfg["seed"])
+    cfg["slippery"] = bool(cfg["slippery"])
+    cfg["with_communication"] = bool(cfg["with_communication"])
+    cfg["full_observability"] = bool(cfg["full_observability"])
+    cfg["smoke"] = bool(cfg["smoke"])
+
+    return argparse.Namespace(**cfg)
+
+
+def parse_base_config(config_path: Path) -> TrainConfig:
+    config = get_args_from_file(config_path)
+
+    # Parse configuration
+    if len(config.reward_schedule) != 5:
+        print(
+            f"🚨 Argument reward_schedule must have 5 elements, got {len(config.reward_schedule)}"
+        )
+    config.artifacts = config.artifacts
+    if not config.artifacts.is_dir():
+        print(f"🚨 --artifacts should be a dir, check {(config.artifacts)}")
+
+    config.experiment_dir = config.artifacts / config.experiment
+    config.runs_dir = config.experiment_dir / "runs"
+    os.makedirs(config.artifacts, exist_ok=True)
+    os.makedirs(config.experiment_dir, exist_ok=True)
+    os.makedirs(config.runs_dir, exist_ok=True)
+
+    if config.smoke:
+        print("🚬🗿 Smoke testing")
+    else:
+        print("📢 Production mode")
+
+    return config
+
+
+def get_all_runs_from_config(base_config: TrainConfig, runs: int) -> List[TrainConfig]:
+    configs = []
+    for run in range(runs):
+        config = deepcopy(base_config)
+        config.run = run
+        config.run_dir = config.runs_dir / f"run_{run}"  # <--- use f-string with run
+        config.run_metrics_file = config.run_dir / "metrics.csv"
+        config.seed = base_config.seed + run
+        configs.append(config)
+    return configs
+
+
+def save_config_yaml(config, filepath: Path):
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert config (Namespace or dataclass) → dict
+    if hasattr(config, "__dict__"):
+        data = {k: v for k, v in config.__dict__.items()}
+    else:
+        raise TypeError("Unsupported config type for saving.")
+
+    # Convert Path objects to strings (YAML cannot serialize Path directly)
+    for k, v in data.items():
+        if isinstance(v, Path):
+            data[k] = str(v)
+
+    with open(filepath, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+def aggregate_metrics(dfs: List[pd.DataFrame]) -> pd.DataFrame:
+    all_df = pd.concat(dfs, keys=range(len(dfs)), names=["run"])
+    return (
+        all_df.groupby("iteration")
+        .agg(mean_reward=("mean_reward", "mean"), std_reward=("mean_reward", "std"))
+        .reset_index()
+    )
+
+def plot():
+    print("\n📈 Generating comparison plot...")
+
+    artifacts_dir = Path("artifacts")
+    experiment_dirs = [d for d in artifacts_dir.iterdir() if d.is_dir()]
+
+    plt.figure(figsize=(10, 6))
+
+    for exp_dir in experiment_dirs:
+        metrics_file = exp_dir / "metrics.csv"
+        if not metrics_file.exists():
+            print(f"⚠️ No aggregated metrics found for {exp_dir.name}, skipping.")
+            continue
+
+        df = pd.read_csv(metrics_file)
+
+        label = exp_dir.name.replace("_", " ")
+
+        # Mean curve
+        plt.plot(df["iteration"], df["mean_reward"], label=label)
+
+        # 95% confidence band: mean ± 1.96 * std
+        if "std_reward" in df.columns:
+            upper = df["mean_reward"] + 1.96 * df["std_reward"]
+            lower = df["mean_reward"] - 1.96 * df["std_reward"]
+
+            plt.fill_between(df["iteration"], lower, upper, alpha=0.2)
+
+    plt.title("Comparison of Experiments (Mean Reward ± 95% CI)")
+    plt.xlabel("Iteration")
+    plt.ylabel("Mean Reward")
+    plt.legend()
+    plt.grid(alpha=0.3, linestyle="--")
+
+    output_path = artifacts_dir / "comparison_plot.png"
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+
+    print(f"📊 Saved comparison plot to '{output_path}'")
+
+def main():
+    args = get_args()
+
+    # Loop over ALL config files in src/configs/*.yaml
+    config_files = sorted(Path("src/configs").glob("*.yaml"))
+    print(f"💡 Found {len(config_files)} experiments config files")
+
+    for cfg_file in tqdm(config_files, desc="Experiment"):
+        print(f"🔧 Using base config: {cfg_file}")
+
+        # Load base config from file
+        base_config = parse_base_config(cfg_file)
+
+        # Create N run-configs for this base config
+        run_configs = get_all_runs_from_config(base_config, args.runs)
+
+        dfs = []
+
+        for config in tqdm(run_configs, desc="Run", leave=False):
+            # Inherit smoke flag
+            config.smoke = config.smoke or args.smoke
+
+            # Path: artifacts/<experiment>/runs/run_X/config.yaml
+            config_path = config.run_dir / "config.yaml"
+
+            # Save run config YAML
+            save_config_yaml(config, config_path)
+
+            # Execute the run
+            df = train(config)
+            dfs.append(df)
+
+        aggregated = aggregate_metrics(dfs)
+        aggregated_path = base_config.experiment_dir / "metrics.csv"
+        aggregated.to_csv(aggregated_path, index=False)
+
+    plot()
 
 if __name__ == "__main__":
     main()

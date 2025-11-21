@@ -26,10 +26,13 @@ MAPS = {
     ],
 }
 
+
 def env(
     seed=None,
     render_mode=None,
     flatten_observations=False,
+    full_observability: bool = False,
+    with_communication: bool = True,
     success_rate: Optional[float] = 1.0 / 3.0,
 ):
     """
@@ -41,9 +44,12 @@ def env(
         seed=seed,
         render_mode=render_mode,
         flatten_observations=flatten_observations,
+        full_observability=full_observability,
+        with_communication=with_communication,
         success_rate=success_rate,
     )
     return env
+
 
 class raw_env(ParallelEnv):
     """
@@ -54,7 +60,7 @@ class raw_env(ParallelEnv):
     """
 
     metadata = {
-        "render_modes": ["human"], 
+        "render_modes": ["human"],
         "name": "MA_FrozenLake_v0",
         "render_fps": 6,
         "is_parallelizable": True,
@@ -66,6 +72,8 @@ class raw_env(ParallelEnv):
         render_mode=None,
         desc: list[str] = None,
         map_name: str = "4x4",
+        full_observability: bool = False,
+        with_communication: bool = True,
         success_rate: Optional[float] = 95.0 / 100.0,
         reward_schedule: tuple[int, int, int, int, int] = (10, 1, -1, -0.001, -0.1),
         flatten_observations=False,
@@ -86,9 +94,13 @@ class raw_env(ParallelEnv):
         self.N_MESSAGES = 5
         self.N_ACTIONS = len(MovementAction)
         self.N_OF_TILES_TYPE = len(Tile)
+        self.full_observability = full_observability
+        self.with_communication = with_communication
         self.GRID_SIZE = 7
-        self.VISION_RANGE = 2 # tiles around agent
-        self.OBS_SIZE = 2 * self.VISION_RANGE + 1
+        self.VISION_RANGE = 2  # tiles around agent
+        self.OBS_SIZE = (
+            self.GRID_SIZE if full_observability else 2 * self.VISION_RANGE + 1
+        )
         self.possible_agents = ["player_" + str(r) for r in range(N_AGENTS)]
         self.reward_schedule = reward_schedule
         self.flatten_observations = flatten_observations
@@ -101,43 +113,59 @@ class raw_env(ParallelEnv):
         )
 
         self._action_spaces = {
-            agent: Tuple((Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)), seed=seed + i)
+            agent: Tuple(
+                (Discrete(self.N_ACTIONS), Discrete(self.N_MESSAGES)), seed=seed + i
+            )
             for i, agent in enumerate(self.possible_agents)
         }
         self._observation_spaces = {
-            agent: Dict({
-                "grid": Box(low=0, high=1, shape=(self.OBS_SIZE, self.OBS_SIZE, self.N_OF_TILES_TYPE), dtype=np.float32),
-                "messages": MultiDiscrete([self.N_MESSAGES] * (len(self.possible_agents) - 1)),
-                "relative_positions": Box(
-                    low=-1.0, high=1.0,
-                    shape=(len(self.possible_agents) - 1, 3), # (dx, dy, visible)
-                    dtype=np.float32
-                ),
-            })
+            agent: Dict(
+                {
+                    "grid": Box(
+                        low=0,
+                        high=1,
+                        shape=(self.OBS_SIZE, self.OBS_SIZE, self.N_OF_TILES_TYPE),
+                        dtype=np.float32,
+                    ),
+                    "messages": MultiDiscrete(
+                        [self.N_MESSAGES] * (len(self.possible_agents) - 1)
+                    ),
+                    "relative_positions": Box(
+                        low=-1.0,
+                        high=1.0,
+                        shape=(len(self.possible_agents) - 1, 3),  # (dx, dy, visible)
+                        dtype=np.float32,
+                    ),
+                }
+            )
             for agent in self.possible_agents
         }
         if self.flatten_observations:
             for agent in self.possible_agents:
                 flat_size = (
                     np.prod(self._observation_spaces[agent]["grid"].shape)
-                    + np.prod(self._observation_spaces[agent]["relative_positions"].shape)
+                    + np.prod(
+                        self._observation_spaces[agent]["relative_positions"].shape
+                    )
                     + len(self._observation_spaces[agent]["messages"].nvec)
                 )
-                self._observation_spaces[agent] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(int(flat_size),), dtype=np.float32)
-        
+                self._observation_spaces[agent] = gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(int(flat_size),), dtype=np.float32
+                )
+
         self.agent_colored_elfs = {}
         self.render_mode = render_mode
-        
+
         self.agent_messages = {agent: 0 for agent in self.possible_agents}
 
         self.reward_range = (min(reward_schedule), max(reward_schedule))
 
         self.game_engine = MAFrozenLakeEngine(
-            seed = seed,
-            agent_list = self.possible_agents,
-            grid_size = self.GRID_SIZE,
-            vision_range = self.VISION_RANGE,
-            success_rate = success_rate,
+            seed=seed,
+            agent_list=self.possible_agents,
+            grid_size=self.GRID_SIZE,
+            vision_range=self.VISION_RANGE,
+            success_rate=success_rate,
         )
 
         nrow, ncol = self.GRID_SIZE, self.GRID_SIZE
@@ -222,7 +250,9 @@ class raw_env(ParallelEnv):
         # --- Add space for mini-grids on the right ---
         spacing = 10
         extra_width = len(self.agents) * (mini_grid_w + spacing)
-        total_width = main_width + extra_width
+        total_width = (
+            main_width if self.full_observability else main_width + extra_width
+        )
         total_height = max(main_height, mini_grid_h)
 
         # --- Final window size ---
@@ -238,9 +268,9 @@ class raw_env(ParallelEnv):
             elif mode == "rgb_array":
                 self.window_surface = pygame.Surface(self.window_size)
 
-        assert (
-            self.window_surface is not None
-        ), "Something went wrong with pygame. This should never happen."
+        assert self.window_surface is not None, (
+            "Something went wrong with pygame. This should never happen."
+        )
 
         if self.clock is None:
             self.clock = pygame.time.Clock()
@@ -275,21 +305,35 @@ class raw_env(ParallelEnv):
             )
         if self.elf_images is None:
             elfs = {
-                MovementAction.LEFT: path.join(path.dirname(__file__), "img/elf_left.png"),
-                MovementAction.DOWN: path.join(path.dirname(__file__), "img/elf_down.png"),
-                MovementAction.RIGHT: path.join(path.dirname(__file__), "img/elf_right.png"),
+                MovementAction.LEFT: path.join(
+                    path.dirname(__file__), "img/elf_left.png"
+                ),
+                MovementAction.DOWN: path.join(
+                    path.dirname(__file__), "img/elf_down.png"
+                ),
+                MovementAction.RIGHT: path.join(
+                    path.dirname(__file__), "img/elf_right.png"
+                ),
                 MovementAction.UP: path.join(path.dirname(__file__), "img/elf_up.png"),
             }
             self.elf_images = {
-                MovementAction.LEFT: pygame.transform.scale(pygame.image.load(elfs[MovementAction.LEFT]), self.cell_size),
-                MovementAction.DOWN: pygame.transform.scale(pygame.image.load(elfs[MovementAction.DOWN]), self.cell_size),
-                MovementAction.RIGHT: pygame.transform.scale(pygame.image.load(elfs[MovementAction.RIGHT]), self.cell_size),
-                MovementAction.UP: pygame.transform.scale(pygame.image.load(elfs[MovementAction.UP]), self.cell_size),
+                MovementAction.LEFT: pygame.transform.scale(
+                    pygame.image.load(elfs[MovementAction.LEFT]), self.cell_size
+                ),
+                MovementAction.DOWN: pygame.transform.scale(
+                    pygame.image.load(elfs[MovementAction.DOWN]), self.cell_size
+                ),
+                MovementAction.RIGHT: pygame.transform.scale(
+                    pygame.image.load(elfs[MovementAction.RIGHT]), self.cell_size
+                ),
+                MovementAction.UP: pygame.transform.scale(
+                    pygame.image.load(elfs[MovementAction.UP]), self.cell_size
+                ),
             }
 
             n_agents = len(self.possible_agents)
             for i, agent_id in enumerate(self.possible_agents):
-                hue_offset = i / n_agents # evenly spaced hues
+                hue_offset = i / n_agents  # evenly spaced hues
                 self.agent_colored_elfs[agent_id] = {
                     k: self._hue_shift(v, hue_offset)
                     for k, v in self.elf_images.items()
@@ -323,88 +367,104 @@ class raw_env(ParallelEnv):
             else:
                 self.window_surface.blit(elf_img, cell_rect)
 
-        # --- Draw each agent's mini-grid on the right ---
-        center_x, center_y = self.OBS_SIZE // 2, self.OBS_SIZE // 2
-        for i, agent_id in enumerate(self.possible_agents):
-            local_patch = self.game_engine.get_local_view(agent_id)
-            local_int = np.argmax(local_patch, axis=-1)
+        if not self.full_observability:
+            # --- Draw each agent's mini-grid on the right ---
+            center_x, center_y = self.OBS_SIZE // 2, self.OBS_SIZE // 2
+            for i, agent_id in enumerate(self.possible_agents):
+                local_patch = self.get_agent_view(agent_id)
+                local_int = np.argmax(local_patch, axis=-1)
 
-            # compute top-left of this agent's window
-            top_left_x = main_width + spacing + i * (mini_grid_w + spacing)
-            top_left_y = 10
+                # compute top-left of this agent's window
+                top_left_x = main_width + spacing + i * (mini_grid_w + spacing)
+                top_left_y = 10
 
-            agent_x, agent_y = self.game_engine.agent_positions[agent_id]
+                agent_x, agent_y = self.game_engine.agent_positions[agent_id]
 
-            for row in range(self.OBS_SIZE):
-                for col in range(self.OBS_SIZE):
-                    tile = Tile(local_int[col, row])
-                    pos = (top_left_x + col * mini_tile_w, top_left_y + row * mini_tile_h)
+                for row in range(self.OBS_SIZE):
+                    for col in range(self.OBS_SIZE):
+                        tile = Tile(local_int[col, row])
+                        pos = (
+                            top_left_x + col * mini_tile_w,
+                            top_left_y + row * mini_tile_h,
+                        )
 
-                    # --- Always draw ice as background first ---
-                    base_img = pygame.transform.scale(self.ice_img, (mini_tile_w, mini_tile_h))
-                    self.window_surface.blit(base_img, pos)
+                        # --- Always draw ice as background first ---
+                        base_img = pygame.transform.scale(
+                            self.ice_img, (mini_tile_w, mini_tile_h)
+                        )
+                        self.window_surface.blit(base_img, pos)
 
-                    # --- Then draw tile overlay if any ---
-                    if tile == Tile.HOLE and (col, row) == (center_x, center_y):
-                        img = self.cracked_hole_img
-                    elif tile == Tile.HOLE:
-                        img = self.hole_img
-                    elif tile == Tile.GOAL:
-                        img = self.goal_img
-                    elif tile == Tile.START:
-                        img = self.start_img
-                    elif tile == Tile.OUT_OF_MAP:
-                        img = self.ice_img_dark
-                    else:
-                        img = None
+                        # --- Then draw tile overlay if any ---
+                        if tile == Tile.HOLE and (col, row) == (center_x, center_y):
+                            img = self.cracked_hole_img
+                        elif tile == Tile.HOLE:
+                            img = self.hole_img
+                        elif tile == Tile.GOAL:
+                            img = self.goal_img
+                        elif tile == Tile.START:
+                            img = self.start_img
+                        elif tile == Tile.OUT_OF_MAP:
+                            img = self.ice_img_dark
+                        else:
+                            img = None
 
-                    if img is not None:
-                        img_scaled = pygame.transform.scale(img, (mini_tile_w, mini_tile_h))
-                        self.window_surface.blit(img_scaled, pos)
+                        if img is not None:
+                            img_scaled = pygame.transform.scale(
+                                img, (mini_tile_w, mini_tile_h)
+                            )
+                            self.window_surface.blit(img_scaled, pos)
 
-                    rect = pygame.Rect(pos[0], pos[1], mini_tile_w, mini_tile_h)
-                    pygame.draw.rect(self.window_surface, (100, 100, 100), rect, 1)
+                        rect = pygame.Rect(pos[0], pos[1], mini_tile_w, mini_tile_h)
+                        pygame.draw.rect(self.window_surface, (100, 100, 100), rect, 1)
 
-            # Draw the agent icon in the center of mini-grid
-            center_pos = (
-                top_left_x + (self.OBS_SIZE // 2) * mini_tile_w,
-                top_left_y + (self.OBS_SIZE // 2) * mini_tile_h,
-            )
-            if self.game_engine.tile_at(agent_x, agent_y) != Tile.HOLE:
-                elf_img = self._get_elf_image(agent_id)
+                # Draw the agent icon in the center of mini-grid
+                center_pos = (
+                    top_left_x + (self.OBS_SIZE // 2) * mini_tile_w,
+                    top_left_y + (self.OBS_SIZE // 2) * mini_tile_h,
+                )
+                if self.game_engine.tile_at(agent_x, agent_y) != Tile.HOLE:
+                    elf_img = self._get_elf_image(agent_id)
 
-                elf_img_scaled = pygame.transform.scale(elf_img, (mini_tile_w, mini_tile_h))
-                self.window_surface.blit(elf_img_scaled, center_pos)
-
-                # Label each mini-grid
-                font = pygame.font.SysFont(None, 20)
-                label = font.render(agent_id, True, (255, 255, 255))
-                self.window_surface.blit(label, (top_left_x, top_left_y - 15))
-
-                # Draw subtle border around self agent
-                border_rect = pygame.Rect(center_pos[0], center_pos[1], mini_tile_w, mini_tile_h)
-                pygame.draw.rect(self.window_surface, (255, 0, 0), border_rect, 1)  # red border, width=1
-
-            # --- Draw other agents visible in this mini-grid ---
-            for other_id in self.possible_agents:
-                if other_id == agent_id:
-                    continue  # skip self
-
-                other_x, other_y = self.game_engine.agent_positions[other_id]
-                # compute relative coords in local patch
-                rel_x = other_x - agent_x + center_x
-                rel_y = other_y - agent_y + center_y
-
-                if 0 <= rel_x < self.OBS_SIZE and 0 <= rel_y < self.OBS_SIZE:
-                    pos = (
-                        top_left_x + rel_x * mini_tile_w,
-                        top_left_y + rel_y * mini_tile_h,
+                    elf_img_scaled = pygame.transform.scale(
+                        elf_img, (mini_tile_w, mini_tile_h)
                     )
-                    # Use other agent's last action for sprite direction
-                    elf_img = self._get_elf_image(other_id)
+                    self.window_surface.blit(elf_img_scaled, center_pos)
 
-                    elf_img_scaled = pygame.transform.scale(elf_img, (mini_tile_w, mini_tile_h))
-                    self.window_surface.blit(elf_img_scaled, pos)
+                    # Label each mini-grid
+                    font = pygame.font.SysFont(None, 20)
+                    label = font.render(agent_id, True, (255, 255, 255))
+                    self.window_surface.blit(label, (top_left_x, top_left_y - 15))
+
+                    # Draw subtle border around self agent
+                    border_rect = pygame.Rect(
+                        center_pos[0], center_pos[1], mini_tile_w, mini_tile_h
+                    )
+                    pygame.draw.rect(
+                        self.window_surface, (255, 0, 0), border_rect, 1
+                    )  # red border, width=1
+
+                # --- Draw other agents visible in this mini-grid ---
+                for other_id in self.possible_agents:
+                    if other_id == agent_id:
+                        continue  # skip self
+
+                    other_x, other_y = self.game_engine.agent_positions[other_id]
+                    # compute relative coords in local patch
+                    rel_x = other_x - agent_x + center_x
+                    rel_y = other_y - agent_y + center_y
+
+                    if 0 <= rel_x < self.OBS_SIZE and 0 <= rel_y < self.OBS_SIZE:
+                        pos = (
+                            top_left_x + rel_x * mini_tile_w,
+                            top_left_y + rel_y * mini_tile_h,
+                        )
+                        # Use other agent's last action for sprite direction
+                        elf_img = self._get_elf_image(other_id)
+
+                        elf_img_scaled = pygame.transform.scale(
+                            elf_img, (mini_tile_w, mini_tile_h)
+                        )
+                        self.window_surface.blit(elf_img_scaled, pos)
 
         # --- Update display ---
         if mode == "human":
@@ -417,13 +477,28 @@ class raw_env(ParallelEnv):
             )
 
     def _get_elf_image(self, agent_id):
-        elf_direction = MovementAction.DOWN \
-            if self.agent_last_action[agent_id] in (None, MovementAction.DO_NOTHING) \
+        elf_direction = (
+            MovementAction.DOWN
+            if self.agent_last_action[agent_id] in (None, MovementAction.DO_NOTHING)
             else self.agent_last_action[agent_id]
+        )
         return self.agent_colored_elfs[agent_id][elf_direction]
 
     def _render_text(self):
         raise NotImplementedError("Text rendering not implemented yet.")
+
+    def get_messages(self, agent: str):
+        if self.with_communication:
+            return [self.agent_messages[a] for a in self.possible_agents if a != agent]
+        num_other_agents = len(self.possible_agents) - 1
+        return [0] * num_other_agents
+
+    def get_agent_view(self, agent):
+        return (
+            self.game_engine.get_grid_one_hot()
+            if self.full_observability
+            else self.game_engine.get_local_view(agent)
+        )
 
     def observe(self, agent):
         """
@@ -431,9 +506,9 @@ class raw_env(ParallelEnv):
         should return a sane observation (though not necessarily the most up to date possible)
         at any time after reset() is called.
         """
-        grid = self.game_engine.get_local_view(agent)
+        grid = self.get_agent_view(agent)
         relative_positions = self.game_engine.get_relative_positions(agent)
-        messages = [self.agent_messages[a] for a in self.possible_agents if a != agent]
+        messages = self.get_messages(agent)
         obs = {
             "grid": grid,
             "relative_positions": relative_positions,
@@ -499,8 +574,8 @@ class raw_env(ParallelEnv):
         self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
         self.terminateds = {agent: False for agent in self.possible_agents}
         self.truncateds = {agent: False for agent in self.possible_agents}
-        self.terminateds['__all__'] = False
-        self.truncateds['__all__'] = False
+        self.terminateds["__all__"] = False
+        self.truncateds["__all__"] = False
         self.infos = {agent: {"dummy": {"yes": 1}} for agent in self.possible_agents}
         self.state = {agent: None for agent in self.possible_agents}
         self.observations = {agent: None for agent in self.possible_agents}
@@ -541,7 +616,6 @@ class raw_env(ParallelEnv):
             f"Action bundle should be a dict, got ({type(action_bundle)}): {action_bundle}"
         )
         for agent_id in action_bundle:
-
             if agent_id in self.truncateds and self.truncateds[agent_id]:
                 continue
 
@@ -579,7 +653,7 @@ class raw_env(ParallelEnv):
         )
         if all_goal:
             for agent in self.agents:
-                if (self.terminateds[agent] or self.truncateds[agent]):
+                if self.terminateds[agent] or self.truncateds[agent]:
                     continue
                 self.rewards[agent] = self.reward_schedule[0]
                 self.terminateds[agent] = True
@@ -616,14 +690,20 @@ class raw_env(ParallelEnv):
             self._was_done_last_step[agent] = True
         rewards = {agent: self.rewards[agent] for agent in obs}
         dones = {
-            agent: (bool(self.terminateds.get(agent, False)) or bool(self.truncateds.get(agent, False)))
+            agent: (
+                bool(self.terminateds.get(agent, False))
+                or bool(self.truncateds.get(agent, False))
+            )
             for agent in obs
         }
 
         truncs = {agent: bool(self.truncateds.get(agent, False)) for agent in obs}
 
         dones["__all__"] = all(
-            (bool(self.terminateds.get(agent, False)) or bool(self.truncateds.get(agent, False)))
+            (
+                bool(self.terminateds.get(agent, False))
+                or bool(self.truncateds.get(agent, False))
+            )
             for agent in obs
         )
         return obs, rewards, dones, truncs, {}
@@ -672,6 +752,7 @@ class raw_env(ParallelEnv):
         pygame.surfarray.pixels_alpha(shifted)[:] = alpha
 
         return shifted
+
 
 # Elf and stool from https://franuka.itch.io/rpg-snow-tileset
 # All other assets by Mel Tillery http://www.cyaneus.com/
