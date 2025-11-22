@@ -84,6 +84,39 @@ def plot_ci_curve(df: pd.DataFrame, label: str, smooth: bool):
     if upper_col in df.columns and lower_col in df.columns:
         plt.fill_between(df["iteration"], df[lower_col], df[upper_col], alpha=0.2)
 
+def compute_last_100_means(artifacts_dir: Path, last_n: int = 100):
+    """Compute mean of mean_reward over the last N iterations for each experiment.
+    Save results to mean_last_100.csv in artifacts_dir.
+    """
+    rows = []
+
+    for exp_dir in get_experiment_dirs(artifacts_dir):
+        df = load_metrics(exp_dir, "metrics.csv")
+        if df is None:
+            continue
+
+        # Take last N iterations
+        tail_df = df.tail(last_n)
+
+        # Compute mean of mean_reward
+        mean_last = tail_df["mean_reward"].mean()
+
+        # Compute std error of these last means
+        std_err_last = tail_df["mean_reward"].std() / (len(tail_df) ** 0.5)
+
+        rows.append(
+            {
+                "config": format_label(exp_dir),
+                "mean_last_100": mean_last,
+                "std_error_last_100": std_err_last,
+            }
+        )
+
+    # Save all results into one CSV
+    out_path = artifacts_dir / "mean_last_100.csv"
+    pd.DataFrame(rows).to_csv(out_path, index=False)
+
+    print(f"📄 Saved last-100-mean summary to '{out_path}'")
 
 # ============================================================
 # Main Plotting Functions
@@ -151,3 +184,5 @@ if __name__ == "__main__":
     plot(artifacts_dir)
     plot_smooth(artifacts_dir, rolling_window)
     plot_last_iters(artifacts_dir, last_iters, rolling_window)
+
+    compute_last_100_means(artifacts_dir, last_n=100)
