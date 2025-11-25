@@ -15,6 +15,7 @@ class TrainConfig:
     slippery = False
     with_lstm = True
     reward_schedule = [10, 1, -1, -0.001, -0.1]
+    iterations: int
     artifacts: Path
     experiment_dir: Path
     run_metrics_file: Path
@@ -39,8 +40,7 @@ def train(config: TrainConfig) -> pd.DataFrame:
 
     register_env("ma_frozen_lake_v0", env_creator)
 
-    iterations = 1000
-    max_iterations = 2 if config.smoke else iterations
+    max_iterations = 2 if config.smoke else config.iterations
 
     algo_config = (
         PPOConfig()
