@@ -1,5 +1,4 @@
 experiment: baseline
-iterations: 3000
 smoke: false
 full_observability: true
 with_lstm: true

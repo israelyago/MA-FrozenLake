@@ -1,10 +1,10 @@
 import argparse
 import os
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import List
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import ray
 import yaml
@@ -57,6 +57,7 @@ def get_args_from_file(config: Path):
         "with_communication": True,
         "reward_schedule": [10, 1, -1, -0.001, -0.1],
         "slippery": True,
+        "iterations": 3000,
         "seed": 42,
         "smoke": False,
     }
@@ -68,6 +69,7 @@ def get_args_from_file(config: Path):
     cfg["artifacts"] = Path(cfg["artifacts"])
     cfg["reward_schedule"] = list(map(float, cfg["reward_schedule"]))
     cfg["seed"] = int(cfg["seed"])
+    cfg["iterations"] = int(cfg["iterations"])
     cfg["slippery"] = bool(cfg["slippery"])
     cfg["with_communication"] = bool(cfg["with_communication"])
     cfg["full_observability"] = bool(cfg["full_observability"])
@@ -84,9 +86,11 @@ def parse_base_config(config_path: Path) -> TrainConfig:
         print(
             f"🚨 Argument reward_schedule must have 5 elements, got {len(config.reward_schedule)}"
         )
-    config.artifacts = config.artifacts
-    if not config.artifacts.is_dir():
-        print(f"🚨 --artifacts should be a dir, check {(config.artifacts)}")
+        sys.exit(1)
+    
+    if config.artifacts.exists() and not config.artifacts.is_dir():
+        print(f"🚨 --artifacts should be a dir, check '{(config.artifacts)}'")
+        sys.exit(1)
 
     config.experiment_dir = config.artifacts / config.experiment
     config.runs_dir = config.experiment_dir / "runs"
