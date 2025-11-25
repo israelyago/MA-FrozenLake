@@ -157,6 +157,7 @@ def run_experiment(config: TrainConfig, args):
 
 def main():
     args = get_args()
+    artifacts_dir = Path("artifacts")
 
     # Loop over ALL config files in src/configs/*.yaml
     config_files = sorted(Path("src/configs").glob("*.yaml"))
@@ -181,7 +182,7 @@ def main():
         aggregated_path = base_config.experiment_dir / "metrics.csv"
         aggregated.to_csv(aggregated_path, index=False)
 
-    plot()
+    plot(artifacts_dir=artifacts_dir)
 
 
 if __name__ == "__main__":
