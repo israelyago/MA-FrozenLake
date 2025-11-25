@@ -90,14 +90,14 @@ class raw_env(ParallelEnv):
 
         These attributes should not be changed after initialization.
         """
-        N_AGENTS = 4
+        N_AGENTS = 2
         self.N_MESSAGES = 5
         self.N_ACTIONS = len(MovementAction)
         self.N_OF_TILES_TYPE = len(Tile)
         self.full_observability = full_observability
         self.with_communication = with_communication
-        self.GRID_SIZE = 7
-        self.VISION_RANGE = 2  # tiles around agent
+        self.GRID_SIZE = 4
+        self.VISION_RANGE = 1  # tiles around agent
         self.OBS_SIZE = (
             self.GRID_SIZE if full_observability else 2 * self.VISION_RANGE + 1
         )
@@ -118,35 +118,38 @@ class raw_env(ParallelEnv):
             )
             for i, agent in enumerate(self.possible_agents)
         }
+        
+        num_agents = len(self.possible_agents)
+        self.EXTRA_AGENT_LAYERS = num_agents - 1
+
         self._observation_spaces = {
             agent: Dict(
                 {
                     "grid": Box(
                         low=0,
                         high=1,
-                        shape=(self.OBS_SIZE, self.OBS_SIZE, self.N_OF_TILES_TYPE),
+                        shape=(
+                            self.OBS_SIZE,
+                            self.OBS_SIZE,
+                            self.N_OF_TILES_TYPE + self.EXTRA_AGENT_LAYERS,
+                        ),
                         dtype=np.float32,
                     ),
                     "messages": MultiDiscrete(
-                        [self.N_MESSAGES] * (len(self.possible_agents) - 1)
-                    ),
-                    "relative_positions": Box(
-                        low=-1.0,
-                        high=1.0,
-                        shape=(len(self.possible_agents) - 1, 3),  # (dx, dy, visible)
-                        dtype=np.float32,
+                        [self.N_MESSAGES] * (num_agents - 1)
                     ),
                 }
             )
             for agent in self.possible_agents
         }
+
         if self.flatten_observations:
             for agent in self.possible_agents:
                 flat_size = (
                     np.prod(self._observation_spaces[agent]["grid"].shape)
-                    + np.prod(
-                        self._observation_spaces[agent]["relative_positions"].shape
-                    )
+                    # + np.prod(
+                    #     self._observation_spaces[agent]["relative_positions"].shape
+                    # )
                     + len(self._observation_spaces[agent]["messages"].nvec)
                 )
                 self._observation_spaces[agent] = gym.spaces.Box(
@@ -500,26 +503,70 @@ class raw_env(ParallelEnv):
             else self.game_engine.get_local_view(agent)
         )
 
+    def _to_local_coords(self, agent, x_global, y_global):
+        ax, ay = self.game_engine.agent_positions[agent]
+
+        # Compute relative offset
+        dx = x_global - ax
+        dy = y_global - ay
+
+        # Only place if inside vision window
+        if abs(dx) > self.VISION_RANGE or abs(dy) > self.VISION_RANGE:
+            return None  # Not visible
+
+        # Convert to index inside the observation grid
+        center = self.OBS_SIZE // 2
+        gx = center + dx
+        gy = center + dy
+
+        return gx, gy
+
+
     def observe(self, agent):
         """
-        Observe should return the observation of the specified agent. This function
-        should return a sane observation (though not necessarily the most up to date possible)
-        at any time after reset() is called.
+        Returns:
+        - grid: (H, W, C_total)
+            C_total = base tile channels + other-agent layers
         """
-        grid = self.get_agent_view(agent)
-        relative_positions = self.game_engine.get_relative_positions(agent)
-        messages = self.get_messages(agent)
-        obs = {
-            "grid": grid,
-            "relative_positions": relative_positions,
+
+        # 1) Already one-hot environmental tensor
+        base_layers = self.get_agent_view(agent)   # shape (H, W, C)
+        H, W, C = base_layers.shape
+
+        # 2) Allocate layers for other agents
+        num_other_agents = len(self.possible_agents) - 1
+        agent_layers = np.zeros((H, W, num_other_agents), dtype=np.float32)
+
+        # 3) Place each other agent into its own layer
+        others = [a for a in self.possible_agents if a != agent]
+
+        for i, other in enumerate(others):
+            ox, oy = self.game_engine.agent_positions[other]
+
+            local = self._to_local_coords(agent, ox, oy)
+            if local is not None:
+                gx, gy = local
+                if 0 <= gx < H and 0 <= gy < W:
+                    agent_layers[gx, gy, i] = 1.0
+
+        # 4) Final spatial tensor
+        full_grid = np.concatenate([base_layers, agent_layers], axis=-1)
+
+        # 5) Messages as separate info
+        messages = np.array(self.get_messages(agent), dtype=np.int32)
+
+        # 6) Optional flatten
+        if self.flatten_observations:
+            grid_flat = full_grid.flatten().astype(np.float32)
+            msg_flat = messages.astype(np.float32).flatten()
+            return np.concatenate([grid_flat, msg_flat]).astype(np.float32)
+
+        return {
+            "grid": full_grid.astype(np.float32),
             "messages": messages,
         }
-        if self.flatten_observations:
-            grid_flat = obs["grid"].flatten()
-            rel_flat = obs["relative_positions"].flatten()
-            msg_flat = np.array(obs["messages"], dtype=np.float32).flatten()
-            obs = np.concatenate([grid_flat, rel_flat, msg_flat]).astype(np.float32)
-        return obs
+
+
 
     def close(self):
         """
